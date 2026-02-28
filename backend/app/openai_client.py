@@ -136,3 +136,30 @@ def generate_image_caption(
     if not output_text:
         raise OpenAIClientError("OpenAI returned an empty vision caption")
     return output_text[:max_chars]
+
+
+def generate_image_bytes(
+    *,
+    model: str,
+    prompt: str,
+    size: str = "1024x1024",
+    quality: str = "medium",
+) -> bytes:
+    payload = {
+        "model": model,
+        "prompt": prompt,
+        "size": size,
+        "quality": quality,
+    }
+    response = _post_json("https://api.openai.com/v1/images/generations", payload)
+    data = response.get("data", [])
+    if not data:
+        raise OpenAIClientError("OpenAI image generation returned no data")
+
+    b64 = data[0].get("b64_json")
+    if not b64:
+        raise OpenAIClientError("OpenAI image generation returned no image payload")
+    try:
+        return base64.b64decode(b64)
+    except Exception as exc:
+        raise OpenAIClientError("Failed to decode generated image payload") from exc

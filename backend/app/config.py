@@ -15,8 +15,14 @@ class Settings(BaseSettings):
     answer_model: str = "gpt-5.2"
     vision_model: str = "gpt-5.2"
     embeddings_model: str = "text-embedding-3-large"
+    answer_grounding_mode: str = "balanced"
     openai_api_key: str = ""
     openai_timeout_seconds: int = 60
+    generated_images_enabled: bool = True
+    generated_image_model: str = "gpt-image-1"
+    generated_image_size: str = "1024x1024"
+    generated_image_quality: str = "medium"
+    generated_image_max_per_answer: int = 1
     ask_top_k: int = 6
     web_fetch_timeout_seconds: int = 20
     web_ingest_max_chars: int = 120000
@@ -29,6 +35,7 @@ class Settings(BaseSettings):
     redis_url: str = "redis://redis:6379/0"
 
     s3_endpoint: str = "http://minio:9000"
+    s3_public_endpoint: str = "http://localhost:9000"
     s3_access_key: str = "minioadmin"
     s3_secret_key: str = "minioadmin"
     s3_bucket_documents: str = "documents"

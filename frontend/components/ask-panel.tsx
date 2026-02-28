@@ -9,6 +9,7 @@ type AskResponse = {
   fallback_mode: "none" | "broadened_retrieval" | "model_knowledge" | "out_of_scope";
   webpage_links: string[];
   image_urls?: string[];
+  generated_image_urls?: string[];
 };
 
 export function AskPanel() {
@@ -103,6 +104,16 @@ export function AskPanel() {
                   </li>
                 ))}
               </ul>
+            </div>
+          ) : null}
+          {result.generated_image_urls && result.generated_image_urls.length > 0 ? (
+            <div className="generated-images">
+              <h3>Generated Visual</h3>
+              {result.generated_image_urls.map((url) => (
+                <a key={url} href={url} target="_blank" rel="noreferrer" className="generated-image-link">
+                  <img src={url} alt="Generated response visual" className="generated-image" loading="lazy" />
+                </a>
+              ))}
             </div>
           ) : null}
         </section>

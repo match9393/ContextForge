@@ -1,12 +1,19 @@
+import json
 import re
+from uuid import uuid4
 from typing import Any
 
 from psycopg.types.json import Jsonb
 
 from app.config import settings
 from app.db import embedding_to_vector_literal
-from app.openai_client import OpenAIClientError, embed_texts, generate_text_response
-from app.storage import generate_presigned_get_url
+from app.openai_client import (
+    OpenAIClientError,
+    embed_texts,
+    generate_image_bytes,
+    generate_text_response,
+)
+from app.storage import ensure_bucket, generate_presigned_get_url, upload_bytes
 
 OFF_TOPIC_TERMS = {
     "weather",
@@ -432,18 +439,171 @@ def _context_rows(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _grounding_mode() -> str:
+    mode = settings.answer_grounding_mode.strip().lower()
+    if mode in {"strict", "balanced", "expansive"}:
+        return mode
+    return "balanced"
+
+
+def _system_prompt_for_mode(mode: str) -> str:
+    if mode == "strict":
+        return (
+            "You are ContextForge, an enterprise knowledge assistant. "
+            "Write concise, practical answers in your own words. "
+            "Rely on indexed context as the primary source and do not add speculative external facts. "
+            "Use plain text only: no markdown headings and no citation blocks. "
+            "Do not mention retrieval internals unless the user asks."
+        )
+    if mode == "expansive":
+        return (
+            "You are ContextForge, an enterprise knowledge assistant. "
+            "Write concise, practical, synthesized answers in your own words. "
+            "Use indexed context as topic anchor, but actively add relevant general domain knowledge when it improves usefulness. "
+            "When extending beyond context, use cautious wording for uncertain points. "
+            "Use plain text only: no markdown headings and no citation blocks. "
+            "Do not mention retrieval internals unless the user asks."
+        )
+    return (
+        "You are ContextForge, an enterprise knowledge assistant. "
+        "Write concise, practical, synthesized answers in your own words. "
+        "Use indexed context as anchor and combine it with relevant general domain knowledge when useful. "
+        "If the context contains concrete lists (for example supported node types), provide the list directly and clearly. "
+        "When extending beyond context, avoid absolute claims and use cautious wording where needed. "
+        "Use plain text only: no markdown headings and no citation blocks. "
+        "Do not mention retrieval internals unless the user asks."
+    )
+
+
+def _extract_json_object(raw: str) -> dict[str, Any]:
+    text = raw.strip()
+    try:
+        parsed = json.loads(text)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        pass
+
+    start = text.find("{")
+    end = text.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return {}
+    snippet = text[start : end + 1]
+    try:
+        parsed = json.loads(snippet)
+        if isinstance(parsed, dict):
+            return parsed
+    except Exception:
+        return {}
+    return {}
+
+
+def _question_requests_visual(question: str) -> bool:
+    q = question.lower()
+    visual_terms = (
+        "diagram",
+        "draw",
+        "image",
+        "visual",
+        "flowchart",
+        "architecture",
+        "show me",
+        "chart",
+        "illustrat",
+    )
+    return any(term in q for term in visual_terms)
+
+
+def _maybe_generate_answer_image(question: str, answer: str, rows: list[dict[str, Any]]) -> list[str]:
+    if not settings.generated_images_enabled:
+        return []
+    if settings.answer_provider.strip().lower() != "openai":
+        return []
+
+    context_text = _context_rows(rows)
+    decision_prompt = (
+        "Decide if an explanatory image should be generated for this answer.\n"
+        "Return JSON only with keys:\n"
+        "- generate (boolean)\n"
+        "- prompt (string, empty when generate=false)\n\n"
+        "Generate image when the user explicitly asks for visual output OR when a workflow/architecture/process visual would materially help.\n"
+        "Question:\n"
+        f"{question}\n\n"
+        "Answer draft:\n"
+        f"{answer}\n\n"
+        "Indexed context summary:\n"
+        f"{context_text}\n"
+    )
+    try:
+        decision_raw = generate_text_response(
+            model=settings.answer_model,
+            system_prompt="Return strict JSON only. No markdown.",
+            user_prompt=decision_prompt,
+            max_output_tokens=220,
+        )
+    except OpenAIClientError:
+        return []
+
+    decision = _extract_json_object(decision_raw)
+    should_generate = bool(decision.get("generate", False))
+    image_prompt = str(decision.get("prompt", "")).strip()
+    if not should_generate:
+        if not _question_requests_visual(question):
+            return []
+        image_prompt = (
+            "Create a clean explanatory enterprise diagram. "
+            f"User request: {question}\n"
+            f"Answer summary: {answer[:700]}"
+        )
+    elif not image_prompt:
+        image_prompt = (
+            "Create a clean explanatory enterprise diagram based on this request: "
+            f"{question}"
+        )
+
+    max_images = max(settings.generated_image_max_per_answer, 0)
+    if max_images <= 0:
+        return []
+
+    generated_urls: list[str] = []
+    ensure_bucket(settings.s3_bucket_assets)
+
+    for _ in range(max_images):
+        try:
+            image_bytes = generate_image_bytes(
+                model=settings.generated_image_model,
+                prompt=image_prompt,
+                size=settings.generated_image_size,
+                quality=settings.generated_image_quality,
+            )
+        except OpenAIClientError:
+            break
+
+        storage_key = f"generated/{uuid4()}.png"
+        try:
+            upload_bytes(
+                bucket_name=settings.s3_bucket_assets,
+                key=storage_key,
+                data=image_bytes,
+                content_type="image/png",
+            )
+            url = generate_presigned_get_url(
+                bucket_name=settings.s3_bucket_assets,
+                key=storage_key,
+                expires_seconds=3600,
+            )
+        except Exception:
+            break
+        generated_urls.append(url)
+
+    return generated_urls
+
+
 def _generate_answer_openai(question: str, rows: list[dict[str, Any]], fallback_mode: str) -> str:
     grounded = "yes" if rows else "no"
     context_text = _context_rows(rows)
-    system_prompt = (
-        "You are ContextForge, an enterprise knowledge assistant. "
-        "Write concise, practical, synthesized answers in your own words. "
-        "Use plain text only: no markdown headings and no citation blocks. "
-        "Do not mention retrieval internals (indexed context, chunks, vector search, source mechanics) unless the user explicitly asks. "
-        "If the context contains concrete lists (for example supported node types), provide the list directly and clearly. "
-        "Do not ask the user for more documents unless the requested information is truly absent from context. "
-        "Only mention that you are using general model knowledge when no relevant indexed context is available."
-    )
+    mode = _grounding_mode()
+    system_prompt = _system_prompt_for_mode(mode)
     user_prompt = (
         f"Question:\n{question}\n\n"
         f"Fallback mode: {fallback_mode}\n"
@@ -453,7 +613,8 @@ def _generate_answer_openai(question: str, rows: list[dict[str, Any]], fallback_
         "1. Provide a direct answer.\n"
         "2. Prefer short paragraphs and short bullet lists.\n"
         "3. If context is absent, provide best-effort domain guidance and say it is based on general knowledge.\n"
-        "4. Do not include source citations or retrieval commentary."
+        "4. If context is present, you may still add useful general domain knowledge when relevant.\n"
+        "5. Do not include source citations or retrieval commentary."
     )
     try:
         return generate_text_response(
@@ -482,7 +643,7 @@ def _generate_answer_ollama_placeholder(question: str, rows: list[dict[str, Any]
 
 def build_answer(
     question: str, rows: list[dict[str, Any]], fallback_mode: str
-) -> tuple[str, int, bool, list[str], list[str]]:
+) -> tuple[str, int, bool, list[str], list[str], list[str]]:
     webpage_links = _collect_webpage_links(rows)
     image_urls = _collect_image_urls(rows)
 
@@ -492,6 +653,7 @@ def build_answer(
             "ContextForge (company knowledge and related domain topics).",
             _confidence_for_mode(fallback_mode),
             False,
+            [],
             [],
             [],
         )
@@ -506,7 +668,8 @@ def build_answer(
 
     grounded = bool(rows)
     confidence = _confidence_for_mode(fallback_mode)
-    return answer, confidence, grounded, webpage_links, image_urls
+    generated_image_urls = _maybe_generate_answer_image(question, answer, rows)
+    return answer, confidence, grounded, webpage_links, image_urls, generated_image_urls
 
 
 def persist_ask_history(

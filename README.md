@@ -163,9 +163,15 @@ All runtime configuration must come from environment variables (never hardcode s
 | `ANSWER_MODEL` | No | `gpt-5.2` | `gpt-5.2` | Answering model id | No |
 | `VISION_MODEL` | No | `gpt-5.2` | `gpt-5.2` | Vision model id | No |
 | `EMBEDDINGS_MODEL` | No | `text-embedding-3-large` | `text-embedding-3-large` | Embedding model id | No |
+| `ANSWER_GROUNDING_MODE` | No | `balanced` | `strict` | Controls how strongly answers stay grounded to retrieved context (`strict|balanced|expansive`) | No |
 | `ASK_TOP_K` | No | `6` | `8` | Number of top retrieved chunks used for answering | No |
 | `OPENAI_API_KEY` | Conditionally | - | `<secret>` | Required when a provider is `openai` | Yes |
 | `OPENAI_TIMEOUT_SECONDS` | No | `60` | `60` | Timeout for OpenAI Responses API requests | No |
+| `GENERATED_IMAGES_ENABLED` | No | `true` | `false` | Enables on-demand answer image generation | No |
+| `GENERATED_IMAGE_MODEL` | No | `gpt-image-1` | `gpt-image-1` | OpenAI model id used for generated answer visuals | No |
+| `GENERATED_IMAGE_SIZE` | No | `1024x1024` | `1024x1024` | Generated image size | No |
+| `GENERATED_IMAGE_QUALITY` | No | `medium` | `high` | Generated image quality | No |
+| `GENERATED_IMAGE_MAX_PER_ANSWER` | No | `1` | `1` | Maximum number of generated visuals returned for one answer | No |
 | `OLLAMA_BASE_URL` | Conditionally | `http://ollama:11434` | `http://host.docker.internal:11434` | Required when a provider is `ollama` | No |
 | `WEB_FETCH_TIMEOUT_SECONDS` | No | `20` | `20` | Timeout for webpage fetch requests during ingest | No |
 | `WEB_INGEST_MAX_CHARS` | No | `120000` | `100000` | Maximum normalized webpage text characters to keep before chunking | No |
@@ -179,6 +185,7 @@ All runtime configuration must come from environment variables (never hardcode s
 | `DATABASE_URL` | Yes | `postgresql://contextforge:contextforge@postgres:5432/contextforge` | `postgresql://user:pass@postgres:5432/db` | Main metadata/vector DB connection | Yes |
 | `REDIS_URL` | Yes | `redis://redis:6379/0` | `redis://redis:6379/0` | Queue/cache/rate-limit backend | No |
 | `S3_ENDPOINT` | Yes | `http://minio:9000` | `http://minio:9000` | Object storage endpoint | No |
+| `S3_PUBLIC_ENDPOINT` | No | `http://localhost:9000` | `https://storage.company.com` | Public/object-download endpoint used in presigned URLs returned to browser | No |
 | `S3_ACCESS_KEY` | Yes | `minioadmin` | `minioadmin` | Object storage access key | Yes |
 | `S3_SECRET_KEY` | Yes | `minioadmin` | `<secret>` | Object storage secret key | Yes |
 | `S3_BUCKET_DOCUMENTS` | Yes | `documents` | `documents` | Bucket for source files | No |
@@ -202,6 +209,7 @@ Notes:
 - "Conditionally" means required only when selected provider needs it.
 - `ADMIN_EMAILS` must be configured for admin ingestion, document deletion, and ask-history visibility.
 - In Docker Compose runs, keep `BACKEND_INTERNAL_URL=http://backend:8000` (container-to-container address), even when host `BACKEND_PORT` is mapped to another port like `18000`.
+- Use `S3_ENDPOINT=http://minio:9000` for backend/worker container access, and `S3_PUBLIC_ENDPOINT=http://localhost:9000` so browser image links (including generated visuals) are reachable from your machine.
 - Webpage ingestion accepts only publicly reachable URLs and blocks private/local network addresses.
 - Linked-page batch ingest is intentionally constrained to discovered same-domain links from one source page per run.
 - Never commit real secrets. Use placeholders in docs and examples.
@@ -220,7 +228,8 @@ Notes:
   - performs multimodal retrieval (text chunks + image captions) with broadened retry (keyword fallback when needed),
   - applies no-retrieval fallback policy,
   - persists ask history and evidence metadata,
-  - returns optional relevant image evidence links.
+  - returns optional relevant image evidence links,
+  - can generate and return inline visual(s) for the answer when the model decides it helps or user asks.
 - PDF ingestion vertical slice (`/api/v1/admin/ingest/pdf`):
   - stores PDF in object storage,
   - extracts text and chunks it,
@@ -243,6 +252,7 @@ Notes:
 
 ## Provider Behavior (Current)
 - `ANSWER_PROVIDER=openai`: implemented. Backend calls OpenAI Responses API using `ANSWER_MODEL` and `OPENAI_API_KEY`.
+- Generated answer visuals: implemented for OpenAI via Images API (`GENERATED_IMAGES_ENABLED=true`).
 - `ANSWER_PROVIDER=ollama`: placeholder only. Request succeeds with a clear "not implemented yet" message; real Ollama generation is still pending.
 - `VISION_PROVIDER=openai`: implemented for PDF and webpage image caption generation during ingest.
 - `VISION_PROVIDER=ollama`: placeholder only (not implemented yet).

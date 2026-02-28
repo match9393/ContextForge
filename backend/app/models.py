@@ -15,6 +15,7 @@ class AskResponse(BaseModel):
     fallback_mode: Literal["none", "broadened_retrieval", "model_knowledge", "out_of_scope"]
     webpage_links: list[str]
     image_urls: list[str] = Field(default_factory=list)
+    generated_image_urls: list[str] = Field(default_factory=list)
 
 
 class IngestPdfResponse(BaseModel):

@@ -110,7 +110,7 @@ def ask(
                 fallback_mode = "model_knowledge"
 
         try:
-            answer, confidence_percent, grounded, webpage_links, image_urls = build_answer(
+            answer, confidence_percent, grounded, webpage_links, image_urls, generated_image_urls = build_answer(
                 question, rows, fallback_mode
             )
         except AnswerProviderError as exc:
@@ -138,6 +138,7 @@ def ask(
         fallback_mode=fallback_mode,
         webpage_links=webpage_links,
         image_urls=image_urls,
+        generated_image_urls=generated_image_urls,
     )
 
 

@@ -166,6 +166,30 @@ code {
   color: #1d4ed8;
 }
 
+.generated-images {
+  margin-top: 10px;
+  display: grid;
+  gap: 10px;
+}
+
+.generated-images h3 {
+  margin: 0;
+  font-size: 14px;
+}
+
+.generated-image-link {
+  display: inline-block;
+}
+
+.generated-image {
+  display: block;
+  width: 100%;
+  max-width: 520px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  background: #ffffff;
+}
+
 .error {
   color: #b91c1c;
   font-weight: 600;
