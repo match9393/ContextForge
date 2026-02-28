@@ -106,6 +106,12 @@ class AdminDocsSetsResponse(BaseModel):
     docs_sets: list[AdminDocsSetItem]
 
 
+class AdminDeleteDocsSetResponse(BaseModel):
+    docs_set_id: int
+    deleted_documents_count: int
+    status: Literal["deleted"]
+
+
 class AdminDiscoveredLinkItem(BaseModel):
     id: int
     source_document_id: int

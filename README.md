@@ -71,12 +71,14 @@ If your Google Workspace policy blocks external OAuth apps, you may need a Works
 - Frontend admin webpage ingest endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/webpages`
 - Frontend admin linked-page ingest endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/webpages/linked`
 - Frontend admin docs-set endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/docs-sets`
+- Frontend admin docs-set delete endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/docs-sets/{docs_set_id}`
 - Frontend admin discovered-links endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/discovered-links`
 - Frontend admin ask-history endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/ask-history`
 - Backend PDF ingest endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/ingest/pdf`
 - Backend webpage ingest endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/ingest/webpage`
 - Backend linked-page ingest endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/ingest/webpage/linked`
 - Backend docs-set list endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/docs-sets`
+- Backend docs-set delete endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/docs-sets/{docs_set_id}`
 - Backend discovered-links list endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/discovered-links?source_document_id={id}`
 - Backend admin documents list endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/documents`
 - Backend admin document delete endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/documents/{document_id}`
@@ -248,6 +250,7 @@ Notes:
   - runs unified retrieval across text chunks, table chunks, and image captions,
   - discovers page links and stores them in admin-visible discovered-links queue,
   - supports one-by-one link ingest and controlled same-domain batch ingest (`max_pages` bounded),
+  - supports docs-set deletion from admin, cascading deletion of all set webpages and derived embeddings/artifacts,
   - supports public pages by default; Google delegated fetch can use optional bearer token configuration.
 
 ## Provider Behavior (Current)

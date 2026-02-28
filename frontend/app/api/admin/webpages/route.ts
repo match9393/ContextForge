@@ -6,6 +6,18 @@ import { isAdminEmail } from "@/lib/admin";
 
 const backendUrl = process.env.BACKEND_INTERNAL_URL || "http://backend:8000";
 
+async function readBackendPayload(response: Response) {
+  const raw = await response.text();
+  if (!raw) {
+    return { error: `Backend returned empty response (${response.status}).` };
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { error: raw };
+  }
+}
+
 type IngestWebRequest = {
   url: string;
   docs_set_id?: number;
@@ -52,17 +64,23 @@ export async function POST(request: Request) {
     backendPayload.discovered_link_id = Math.floor(payload.discovered_link_id);
   }
 
-  const response = await fetch(`${backendUrl}/api/v1/admin/ingest/webpage`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "X-User-Email": session.user.email,
-      "X-User-Name": session.user.name || "",
-    },
-    body: JSON.stringify(backendPayload),
-    cache: "no-store",
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${backendUrl}/api/v1/admin/ingest/webpage`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "X-User-Email": session.user.email,
+        "X-User-Name": session.user.name || "",
+      },
+      body: JSON.stringify(backendPayload),
+      cache: "no-store",
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : "Failed to contact backend";
+    return NextResponse.json({ error: message }, { status: 502 });
+  }
 
-  const data = await response.json();
+  const data = await readBackendPayload(response);
   return NextResponse.json(data, { status: response.status });
 }

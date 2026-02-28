@@ -16,6 +16,7 @@ from app.db import get_connection, init_db
 from app.ingestion_service import IngestionError, ingest_pdf_document
 from app.models import (
     AdminAskHistoryResponse,
+    AdminDeleteDocsSetResponse,
     AdminDeleteDocumentResponse,
     AdminDiscoveredLinksResponse,
     AdminDocsSetsResponse,
@@ -372,6 +373,48 @@ def list_docs_sets(
             )
             rows = cur.fetchall()
     return AdminDocsSetsResponse(docs_sets=rows)
+
+
+@app.delete("/api/v1/admin/docs-sets/{docs_set_id}", response_model=AdminDeleteDocsSetResponse)
+def delete_docs_set(
+    docs_set_id: int,
+    x_user_email: str | None = Header(default=None),
+    x_user_name: str | None = Header(default=None),
+) -> AdminDeleteDocsSetResponse:
+    user_email = _require_auth_email(x_user_email)
+    _require_admin_email(user_email)
+
+    with get_connection() as conn:
+        ensure_user(conn, user_email, x_user_name)
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM docs_sets WHERE id = %s;", (docs_set_id,))
+            existing = cur.fetchone()
+        if not existing:
+            raise HTTPException(status_code=404, detail="Docs set not found")
+
+        with conn.cursor() as cur:
+            cur.execute("SELECT id FROM documents WHERE docs_set_id = %s;", (docs_set_id,))
+            doc_rows = cur.fetchall()
+        document_ids = [int(row["id"]) for row in doc_rows]
+
+        try:
+            for document_id in document_ids:
+                prefix = f"documents/{document_id}/"
+                delete_prefix(bucket_name=settings.s3_bucket_documents, prefix=prefix)
+                delete_prefix(bucket_name=settings.s3_bucket_assets, prefix=prefix)
+        except Exception as exc:
+            raise HTTPException(status_code=500, detail=f"Failed to delete docs-set assets: {exc}") from exc
+
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM documents WHERE docs_set_id = %s;", (docs_set_id,))
+            cur.execute("DELETE FROM docs_sets WHERE id = %s;", (docs_set_id,))
+        conn.commit()
+
+    return AdminDeleteDocsSetResponse(
+        docs_set_id=docs_set_id,
+        deleted_documents_count=len(document_ids),
+        status="deleted",
+    )
 
 
 @app.get("/api/v1/admin/discovered-links", response_model=AdminDiscoveredLinksResponse)

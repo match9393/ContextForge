@@ -122,6 +122,8 @@ export function AdminPanel() {
 
   const [deleteCandidate, setDeleteCandidate] = useState<AdminDocument | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [deleteDocsSetCandidate, setDeleteDocsSetCandidate] = useState<AdminDocsSet | null>(null);
+  const [deletingDocsSet, setDeletingDocsSet] = useState(false);
 
   const selectedWebDocument = useMemo(() => {
     if (!selectedWebDocumentId) {
@@ -380,6 +382,39 @@ export function AdminPanel() {
     }
   }
 
+  async function confirmDeleteDocsSet() {
+    if (!deleteDocsSetCandidate) {
+      return;
+    }
+
+    setDeletingDocsSet(true);
+    setInfoMessage(null);
+    try {
+      const response = await fetch(`/api/admin/docs-sets/${deleteDocsSetCandidate.id}`, { method: "DELETE" });
+      const data = (await response.json()) as {
+        error?: string;
+        detail?: string;
+        deleted_documents_count?: number;
+      };
+      if (!response.ok) {
+        setInfoMessage(data.error || data.detail || "Docs set delete failed.");
+        return;
+      }
+
+      setInfoMessage(
+        `Deleted docs set #${deleteDocsSetCandidate.id} and ${data.deleted_documents_count ?? 0} document(s).`,
+      );
+      setDeleteDocsSetCandidate(null);
+      setSelectedDocsSetId("");
+      setSelectedWebDocumentId(null);
+      await Promise.all([loadDocuments(), loadDocsSets(), loadHistory()]);
+    } catch {
+      setInfoMessage("Docs set delete failed due to network error.");
+    } finally {
+      setDeletingDocsSet(false);
+    }
+  }
+
   const selectedLinksStats = useMemo(() => {
     const discovered = discoveredLinks.filter((link) => link.status === "discovered").length;
     const ingested = discoveredLinks.filter((link) => link.status === "ingested").length;
@@ -465,6 +500,7 @@ export function AdminPanel() {
                   <th>Root URL</th>
                   <th>Documents</th>
                   <th>Created</th>
+                  <th />
                 </tr>
               </thead>
               <tbody>
@@ -475,6 +511,16 @@ export function AdminPanel() {
                     <td>{setItem.root_url || "-"}</td>
                     <td>{setItem.document_count}</td>
                     <td>{formatDate(setItem.created_at)}</td>
+                    <td className="admin-actions">
+                      <button
+                        type="button"
+                        className="button danger"
+                        onClick={() => setDeleteDocsSetCandidate(setItem)}
+                        disabled={deletingDocsSet || deleting}
+                      >
+                        Delete
+                      </button>
+                    </td>
                   </tr>
                 ))}
               </tbody>
@@ -683,6 +729,36 @@ export function AdminPanel() {
               </button>
               <button type="button" className="button danger" onClick={() => void confirmDelete()} disabled={deleting}>
                 {deleting ? "Deleting..." : "Delete now"}
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {deleteDocsSetCandidate ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal-card">
+            <h3>Delete docs set?</h3>
+            <p>
+              This will immediately remove docs set <strong>{deleteDocsSetCandidate.name}</strong> and all webpages
+              in this set, including chunks, embeddings, images, and discovered links.
+            </p>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="button secondary"
+                onClick={() => setDeleteDocsSetCandidate(null)}
+                disabled={deletingDocsSet}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="button danger"
+                onClick={() => void confirmDeleteDocsSet()}
+                disabled={deletingDocsSet}
+              >
+                {deletingDocsSet ? "Deleting..." : "Delete docs set"}
               </button>
             </div>
           </div>
