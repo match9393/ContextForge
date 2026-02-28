@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Product/Scope Clarification
+    url: https://github.com/match9393/ContextForge/discussions
+    about: Use Discussions for open-ended product direction topics before filing an implementation issue.
