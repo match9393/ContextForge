@@ -3,12 +3,15 @@ services:
     build:
       context: ./frontend
       dockerfile: Dockerfile
+    env_file:
+      - .env
     environment:
       NEXT_PUBLIC_API_BASE_URL: ${API_URL:-http://localhost:8000}
+      BACKEND_INTERNAL_URL: ${BACKEND_INTERNAL_URL:-http://backend:8000}
       NEXTAUTH_URL: ${NEXTAUTH_URL:-http://localhost:3000}
       NEXTAUTH_SECRET: ${NEXTAUTH_SECRET}
     ports:
-      - "3000:3000"
+      - "${FRONTEND_PORT:-3000}:3000"
     depends_on:
       backend:
         condition: service_healthy
@@ -20,7 +23,7 @@ services:
     env_file:
       - .env
     ports:
-      - "8000:8000"
+      - "${BACKEND_PORT:-8000}:8000"
     depends_on:
       postgres:
         condition: service_healthy
@@ -61,7 +64,7 @@ services:
       POSTGRES_USER: ${POSTGRES_USER:-contextforge}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-contextforge}
     ports:
-      - "5432:5432"
+      - "${POSTGRES_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -73,7 +76,7 @@ services:
   redis:
     image: redis:7-alpine
     ports:
-      - "6379:6379"
+      - "${REDIS_PORT:-6379}:6379"
     volumes:
       - redis_data:/data
     healthcheck:
@@ -89,8 +92,8 @@ services:
       MINIO_ROOT_USER: ${S3_ACCESS_KEY:-minioadmin}
       MINIO_ROOT_PASSWORD: ${S3_SECRET_KEY:-minioadmin}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "${MINIO_PORT:-9000}:9000"
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
     volumes:
       - minio_data:/data
 

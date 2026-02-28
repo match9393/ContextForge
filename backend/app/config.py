@@ -24,5 +24,14 @@ class Settings(BaseSettings):
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
+    def is_allowed_google_domain(self, email: str) -> bool:
+        configured = self.allowed_google_domains.strip()
+        if configured == "*":
+            return True
+
+        domain = email.split("@")[-1].lower()
+        allowed = [item.strip().lower() for item in configured.split(",") if item.strip()]
+        return domain in allowed
+
 
 settings = Settings()

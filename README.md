@@ -5,7 +5,7 @@ ContextForge is an LLM-first knowledge assistant for company documents and appro
 ## Current State
 This repository now includes an MVP scaffold:
 - `frontend` (Next.js app)
-- `backend` (FastAPI API with health endpoints)
+- `backend` (FastAPI API with DB bootstrap and `/api/v1/ask`)
 - `worker` (background process skeleton)
 - `docker-compose.yml` (single stack file)
 - Product docs and PRD (`prd_v2_en.md`)
@@ -23,6 +23,7 @@ This repository now includes an MVP scaffold:
 ```bash
 cp .env.example .env
 ```
+If local ports are already in use, change `FRONTEND_PORT`, `BACKEND_PORT`, `POSTGRES_PORT`, `REDIS_PORT`, `MINIO_PORT`, and `MINIO_CONSOLE_PORT` in `.env`.
 2. Start the full stack:
 ```bash
 docker compose up -d --build
@@ -32,10 +33,16 @@ docker compose up -d --build
 docker compose down -v
 ```
 
+Google OAuth callback for local development:
+- `http://localhost:3000/api/auth/callback/google`
+
+Before first login, configure this callback in your Google OAuth app.
+
 ## Service Endpoints (Local)
-- Frontend: `http://localhost:3000`
-- Backend health: `http://localhost:8000/health`
-- Backend API health: `http://localhost:8000/api/v1/health`
+- Frontend: `http://localhost:${FRONTEND_PORT}` (default `http://localhost:3000`)
+- Backend health: `http://localhost:${BACKEND_PORT}/health` (default `http://localhost:8000/health`)
+- Backend API health: `http://localhost:${BACKEND_PORT}/api/v1/health`
+- Frontend ask proxy endpoint: `http://localhost:${FRONTEND_PORT}/api/ask`
 - MinIO API: `http://localhost:9000`
 - MinIO Console: `http://localhost:9001`
 - Postgres: `localhost:5432`
@@ -62,8 +69,15 @@ All runtime configuration must come from environment variables (never hardcode s
 | Variable | Required | Default | Example | Purpose | Sensitive |
 |---|---|---|---|---|---|
 | `APP_ENV` | No | `development` | `production` | Runtime mode | No |
+| `FRONTEND_PORT` | No | `3000` | `13000` | Host port mapped to frontend container port 3000 | No |
+| `BACKEND_PORT` | No | `8000` | `18000` | Host port mapped to backend container port 8000 | No |
+| `POSTGRES_PORT` | No | `5432` | `15432` | Host port mapped to Postgres | No |
+| `REDIS_PORT` | No | `6379` | `16379` | Host port mapped to Redis | No |
+| `MINIO_PORT` | No | `9000` | `19000` | Host port mapped to MinIO API | No |
+| `MINIO_CONSOLE_PORT` | No | `9001` | `19001` | Host port mapped to MinIO console | No |
 | `APP_URL` | No | `http://localhost:3000` | `https://app.company.com` | Public frontend URL | No |
 | `API_URL` | No | `http://localhost:8000` | `https://api.company.com` | Public API URL | No |
+| `BACKEND_INTERNAL_URL` | No | `http://backend:8000` | `http://backend:8000` | Backend URL used by frontend server routes | No |
 | `ALLOWED_GOOGLE_DOMAINS` | Yes | `netaxis.be` | `netaxis.be,google.com` | Allowed Google email domains (`*` for all) | No |
 | `GOOGLE_CLIENT_ID` | Yes | - | `123...apps.googleusercontent.com` | Google SSO OAuth client id | No |
 | `GOOGLE_CLIENT_SECRET` | Yes | - | `<secret>` | Google SSO OAuth client secret | Yes |
@@ -109,6 +123,16 @@ Notes:
 - `README.md` is a living operational document.
 - Any change to configuration, deployment, runtime behavior, or dependencies must update this file in the same PR.
 - Every coding/testing cycle should include a README consistency review.
+
+## Implemented in This Milestone
+- Google sign-in via NextAuth in frontend (`/api/auth/*`).
+- Domain allow-list checks in frontend sign-in callback and backend `/api/v1/ask`.
+- Backend startup schema bootstrap (`users`, `documents`, `text_chunks`, `document_images`, `image_captions`, `ask_history`).
+- First `/api/v1/ask` vertical slice:
+  - requires authenticated user identity via frontend proxy,
+  - performs simple retrieval attempt + broadened retry,
+  - applies no-retrieval fallback policy,
+  - persists ask history and evidence metadata.
 
 ## Git Workflow
 - Use short-lived feature branches from `main`.
