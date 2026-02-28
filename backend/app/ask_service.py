@@ -1,7 +1,12 @@
+import json
 import re
 from typing import Any
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 from psycopg.types.json import Jsonb
+
+from app.config import settings
 
 OFF_TOPIC_TERMS = {
     "weather",
@@ -13,6 +18,10 @@ OFF_TOPIC_TERMS = {
     "horoscope",
     "lottery",
 }
+
+
+class AnswerProviderError(Exception):
+    """Raised when answer provider invocation fails."""
 
 
 def ensure_user(conn, email: str, full_name: str | None) -> str:
@@ -72,48 +81,160 @@ def is_out_of_scope(question: str) -> bool:
     return any(term in q for term in OFF_TOPIC_TERMS)
 
 
-def build_answer(question: str, rows: list[dict[str, Any]], fallback_mode: str) -> tuple[str, int, bool, list[str]]:
+def _collect_webpage_links(rows: list[dict[str, Any]]) -> list[str]:
     webpage_links: list[str] = []
-
     for row in rows:
         if row.get("source_type") == "web" and row.get("source_url"):
             link = str(row["source_url"])
             if link not in webpage_links:
                 webpage_links.append(link)
+    return webpage_links
 
-    if rows:
-        snippets = []
-        for row in rows[:2]:
-            normalized = " ".join(str(row["chunk_text"]).split())
-            snippets.append(normalized[:220])
 
-        joined = " ".join(snippets)
-        answer = (
-            "Based on indexed sources, here is a synthesized answer: "
-            f"{joined}"
+def _confidence_for_mode(fallback_mode: str) -> int:
+    if fallback_mode == "none":
+        return 82
+    if fallback_mode == "broadened_retrieval":
+        return 72
+    if fallback_mode == "model_knowledge":
+        return 42
+    return 18
+
+
+def _context_rows(rows: list[dict[str, Any]]) -> str:
+    if not rows:
+        return "No indexed context was retrieved."
+
+    lines: list[str] = []
+    for row in rows[:4]:
+        normalized = " ".join(str(row.get("chunk_text", "")).split())
+        source_name = row.get("source_name") or "unknown-source"
+        source_type = row.get("source_type") or "unknown"
+        source_url = row.get("source_url") or ""
+        lines.append(
+            f"- source={source_name} type={source_type} url={source_url}\n"
+            f"  chunk={normalized[:500]}"
         )
+    return "\n".join(lines)
 
-        confidence = 82 if fallback_mode == "none" else 72
-        grounded = True
-        return answer, confidence, grounded, webpage_links
+
+def _extract_openai_text(payload: dict[str, Any]) -> str:
+    direct = str(payload.get("output_text", "")).strip()
+    if direct:
+        return direct
+
+    collected: list[str] = []
+    for item in payload.get("output", []):
+        for part in item.get("content", []):
+            if part.get("type") == "output_text" and part.get("text"):
+                collected.append(str(part["text"]))
+    return "\n".join(collected).strip()
+
+
+def _generate_answer_openai(question: str, rows: list[dict[str, Any]], fallback_mode: str) -> str:
+    if not settings.openai_api_key:
+        raise AnswerProviderError("OPENAI_API_KEY is required when ANSWER_PROVIDER=openai")
+
+    grounded = "yes" if rows else "no"
+    context_text = _context_rows(rows)
+    system_prompt = (
+        "You are ContextForge, an enterprise knowledge assistant. "
+        "Write concise, practical, synthesized answers in your own words. "
+        "Do not output citation blocks. "
+        "If no indexed context is provided, explicitly say that you are answering from model knowledge."
+    )
+    user_prompt = (
+        f"Question:\n{question}\n\n"
+        f"Fallback mode: {fallback_mode}\n"
+        f"Indexed context available: {grounded}\n\n"
+        f"Indexed context:\n{context_text}\n\n"
+        "Answer requirements:\n"
+        "1. Provide a direct answer.\n"
+        "2. Mention whether indexed context was found.\n"
+        "3. If context is absent, provide best-effort domain guidance.\n"
+        "4. No citation formatting."
+    )
+
+    request_payload = {
+        "model": settings.answer_model,
+        "input": [
+            {
+                "role": "system",
+                "content": [{"type": "input_text", "text": system_prompt}],
+            },
+            {
+                "role": "user",
+                "content": [{"type": "input_text", "text": user_prompt}],
+            },
+        ],
+        "max_output_tokens": 700,
+    }
+    request_data = json.dumps(request_payload).encode("utf-8")
+
+    request = Request(
+        url="https://api.openai.com/v1/responses",
+        data=request_data,
+        method="POST",
+        headers={
+            "Authorization": f"Bearer {settings.openai_api_key}",
+            "Content-Type": "application/json",
+        },
+    )
+
+    try:
+        with urlopen(request, timeout=settings.openai_timeout_seconds) as response:
+            body = response.read().decode("utf-8")
+    except HTTPError as exc:
+        details = exc.read().decode("utf-8", errors="ignore")
+        raise AnswerProviderError(f"OpenAI request failed ({exc.code}): {details[:300]}") from exc
+    except URLError as exc:
+        raise AnswerProviderError(f"OpenAI network error: {exc.reason}") from exc
+
+    payload = json.loads(body)
+    output_text = _extract_openai_text(payload)
+    if not output_text:
+        raise AnswerProviderError("OpenAI returned an empty answer")
+
+    return output_text
+
+
+def _generate_answer_ollama_placeholder(question: str, rows: list[dict[str, Any]], fallback_mode: str) -> str:
+    if rows:
+        return (
+            "Ollama provider is configured, but provider execution is not implemented yet. "
+            "Indexed context was retrieved and persisted, but answer generation is currently disabled for Ollama. "
+            f"Question: {question}"
+        )
+    return (
+        "Ollama provider is configured, but provider execution is not implemented yet. "
+        "No indexed context answer was generated. "
+        f"Fallback mode: {fallback_mode}. Question: {question}"
+    )
+
+
+def build_answer(question: str, rows: list[dict[str, Any]], fallback_mode: str) -> tuple[str, int, bool, list[str]]:
+    webpage_links = _collect_webpage_links(rows)
 
     if fallback_mode == "out_of_scope":
         return (
             "I could not find relevant indexed sources, and this request appears outside the scope of "
             "ContextForge (company knowledge and related domain topics).",
-            18,
+            _confidence_for_mode(fallback_mode),
             False,
             [],
         )
 
-    return (
-        "I could not find supporting indexed sources for this question. I am providing a best-effort "
-        "domain answer using model knowledge only."
-        f" Question: {question}",
-        42,
-        False,
-        [],
-    )
+    provider = settings.answer_provider.lower().strip()
+    if provider == "openai":
+        answer = _generate_answer_openai(question, rows, fallback_mode)
+    elif provider == "ollama":
+        answer = _generate_answer_ollama_placeholder(question, rows, fallback_mode)
+    else:
+        raise AnswerProviderError(f"Unsupported ANSWER_PROVIDER value: {settings.answer_provider}")
+
+    grounded = bool(rows)
+    confidence = _confidence_for_mode(fallback_mode)
+    return answer, confidence, grounded, webpage_links
 
 
 def persist_ask_history(
@@ -159,6 +280,8 @@ def persist_ask_history(
         "retrieved_chunk_count": len(chunks_used),
         "retrieval_outcome": retrieval_outcome,
         "fallback_mode": fallback_mode,
+        "answer_provider": settings.answer_provider,
+        "answer_model": settings.answer_model,
     }
 
     with conn.cursor() as cur:

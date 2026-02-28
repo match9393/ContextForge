@@ -11,6 +11,9 @@ class Settings(BaseSettings):
     answer_provider: str = "openai"
     vision_provider: str = "openai"
     embeddings_provider: str = "openai"
+    answer_model: str = "gpt-5.2"
+    openai_api_key: str = ""
+    openai_timeout_seconds: int = 60
 
     database_url: str = "postgresql://contextforge:contextforge@postgres:5432/contextforge"
     redis_url: str = "redis://redis:6379/0"

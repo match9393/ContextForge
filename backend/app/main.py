@@ -3,7 +3,14 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Header, HTTPException
 from psycopg import Error as PsycopgError
 
-from app.ask_service import build_answer, ensure_user, is_out_of_scope, persist_ask_history, retrieve_chunks
+from app.ask_service import (
+    AnswerProviderError,
+    build_answer,
+    ensure_user,
+    is_out_of_scope,
+    persist_ask_history,
+    retrieve_chunks,
+)
 from app.config import settings
 from app.db import get_connection, init_db
 from app.models import AskRequest, AskResponse
@@ -77,9 +84,12 @@ def ask(
             else:
                 fallback_mode = "model_knowledge"
 
-        answer, confidence_percent, grounded, webpage_links = build_answer(
-            question, rows, fallback_mode
-        )
+        try:
+            answer, confidence_percent, grounded, webpage_links = build_answer(
+                question, rows, fallback_mode
+            )
+        except AnswerProviderError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
 
         retrieval_outcome = "found" if rows else "none"
         persist_ask_history(

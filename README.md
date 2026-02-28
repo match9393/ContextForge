@@ -93,6 +93,7 @@ All runtime configuration must come from environment variables (never hardcode s
 | `VISION_MODEL` | No | `gpt-5.2` | `gpt-5.2` | Vision model id | No |
 | `EMBEDDINGS_MODEL` | No | `text-embedding-3-large` | `text-embedding-3-large` | Embedding model id | No |
 | `OPENAI_API_KEY` | Conditionally | - | `<secret>` | Required when a provider is `openai` | Yes |
+| `OPENAI_TIMEOUT_SECONDS` | No | `60` | `60` | Timeout for OpenAI Responses API requests | No |
 | `OLLAMA_BASE_URL` | Conditionally | `http://ollama:11434` | `http://host.docker.internal:11434` | Required when a provider is `ollama` | No |
 | `POSTGRES_DB` | Yes | `contextforge` | `contextforge` | Postgres database name | No |
 | `POSTGRES_USER` | Yes | `contextforge` | `contextforge` | Postgres user | No |
@@ -133,6 +134,10 @@ Notes:
   - performs simple retrieval attempt + broadened retry,
   - applies no-retrieval fallback policy,
   - persists ask history and evidence metadata.
+
+## Provider Behavior (Current)
+- `ANSWER_PROVIDER=openai`: implemented. Backend calls OpenAI Responses API using `ANSWER_MODEL` and `OPENAI_API_KEY`.
+- `ANSWER_PROVIDER=ollama`: placeholder only. Request succeeds with a clear "not implemented yet" message; real Ollama generation is still pending.
 
 ## Git Workflow
 - Use short-lived feature branches from `main`.
