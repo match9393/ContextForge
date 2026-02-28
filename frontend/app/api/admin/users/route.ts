@@ -1,8 +1,8 @@
 import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 
-import { authOptions } from "@/lib/auth";
 import { resolveAdminAccess } from "@/lib/admin-access";
+import { authOptions } from "@/lib/auth";
 
 const backendUrl = process.env.BACKEND_INTERNAL_URL || "http://backend:8000";
 
@@ -13,7 +13,7 @@ function parseLimit(url: string, defaultValue: number) {
   if (!Number.isFinite(parsed)) {
     return defaultValue;
   }
-  return Math.min(Math.max(Math.floor(parsed), 1), 500);
+  return Math.min(Math.max(Math.floor(parsed), 1), 1000);
 }
 
 export async function GET(request: Request) {
@@ -27,7 +27,7 @@ export async function GET(request: Request) {
   }
 
   const limit = parseLimit(request.url, 200);
-  const response = await fetch(`${backendUrl}/api/v1/admin/docs-sets?limit=${limit}`, {
+  const response = await fetch(`${backendUrl}/api/v1/admin/users?limit=${limit}`, {
     method: "GET",
     headers: {
       "X-User-Email": session.user.email,

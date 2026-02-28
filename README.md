@@ -64,6 +64,7 @@ If your Google Workspace policy blocks external OAuth apps, you may need a Works
 
 ## Service Endpoints (Local)
 - Frontend: `http://localhost:${FRONTEND_PORT}` (default `http://localhost:3000`)
+- Frontend admin UI: `http://localhost:${FRONTEND_PORT}/admin`
 - Backend health: `http://localhost:${BACKEND_PORT}/health` (default `http://localhost:8000/health`)
 - Backend API health: `http://localhost:${BACKEND_PORT}/api/v1/health`
 - Frontend ask proxy endpoint: `http://localhost:${FRONTEND_PORT}/api/ask`
@@ -72,17 +73,27 @@ If your Google Workspace policy blocks external OAuth apps, you may need a Works
 - Frontend admin linked-page ingest endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/webpages/linked`
 - Frontend admin docs-set endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/docs-sets`
 - Frontend admin docs-set delete endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/docs-sets/{docs_set_id}`
+- Frontend admin document re-ingest endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/documents/{document_id}` (POST)
 - Frontend admin discovered-links endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/discovered-links`
 - Frontend admin ask-history endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/ask-history`
+- Frontend super-admin login endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/superadmin/login`
+- Frontend super-admin verify endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/superadmin/verify`
+- Frontend users list endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/users`
+- Frontend users role endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/users/role`
 - Backend PDF ingest endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/ingest/pdf`
 - Backend webpage ingest endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/ingest/webpage`
 - Backend linked-page ingest endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/ingest/webpage/linked`
 - Backend docs-set list endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/docs-sets`
 - Backend docs-set delete endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/docs-sets/{docs_set_id}`
+- Backend document re-ingest endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/documents/{document_id}/reingest`
 - Backend discovered-links list endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/discovered-links?source_document_id={id}`
 - Backend admin documents list endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/documents`
 - Backend admin document delete endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/documents/{document_id}`
 - Backend admin ask-history list endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/ask-history`
+- Backend super-admin login endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/superadmin/login`
+- Backend super-admin verify endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/superadmin/verify`
+- Backend users list endpoint (super-admin): `http://localhost:${BACKEND_PORT}/api/v1/admin/users`
+- Backend users role endpoint (super-admin): `http://localhost:${BACKEND_PORT}/api/v1/admin/users/role`
 - MinIO API: `http://localhost:9000`
 - MinIO Console: `http://localhost:9001`
 - Postgres: `localhost:5432`
@@ -158,6 +169,8 @@ All runtime configuration must come from environment variables (never hardcode s
 | `NEXTAUTH_SECRET` | Yes | - | `<secret>` | Session/cookie signing secret | Yes |
 | `SUPERADMIN_USERNAME` | Yes | `superadmin` | `superadmin` | Emergency admin login username | No |
 | `SUPERADMIN_PASSWORD_HASH` | Yes | - | `<bcrypt_hash>` | Emergency admin password hash (bcrypt) | Yes |
+| `SUPERADMIN_SESSION_SECRET` | Yes | `change_me_superadmin_secret` | `<secret>` | HMAC secret used to sign super-admin session tokens | Yes |
+| `SUPERADMIN_SESSION_TTL_SECONDS` | No | `43200` | `14400` | Super-admin session validity in seconds | No |
 | `PUBLIC_DOCUMENT_DOWNLOADS` | No | `false` | `true` | Enables end-user PDF download links | No |
 | `ANSWER_PROVIDER` | Yes | `openai` | `ollama` | Answering provider (`openai|ollama`) | No |
 | `VISION_PROVIDER` | Yes | `openai` | `ollama` | Vision provider (`openai|ollama`) | No |
@@ -209,11 +222,12 @@ All runtime configuration must come from environment variables (never hardcode s
 
 Notes:
 - "Conditionally" means required only when selected provider needs it.
-- `ADMIN_EMAILS` must be configured for admin ingestion, document deletion, and ask-history visibility.
+- `ADMIN_EMAILS` controls direct admin access. Users outside this list can still access admin via super-admin login on `/admin`.
 - In Docker Compose runs, keep `BACKEND_INTERNAL_URL=http://backend:8000` (container-to-container address), even when host `BACKEND_PORT` is mapped to another port like `18000`.
 - Use `S3_ENDPOINT=http://minio:9000` for backend/worker container access, and `S3_PUBLIC_ENDPOINT=http://localhost:9000` so browser image links (including generated visuals) are reachable from your machine.
 - Webpage ingestion accepts only publicly reachable URLs and blocks private/local network addresses.
 - Linked-page batch ingest is intentionally constrained to discovered same-domain links from one source page per run.
+- To create `SUPERADMIN_PASSWORD_HASH`, run: `docker compose run --rm backend python -c "import bcrypt; print(bcrypt.hashpw(b'your-password', bcrypt.gensalt()).decode())"`.
 - Never commit real secrets. Use placeholders in docs and examples.
 
 ## Documentation Governance
@@ -239,9 +253,10 @@ Notes:
   - creates OpenAI embeddings for text chunks and image captions,
   - stores vectorized chunks in Postgres/pgvector and marks document ready.
 - Admin panel v1:
-  - admin-only frontend UI for PDF upload, indexed document monitoring, and ask-history review,
-  - admin-only backend APIs for listing/deleting documents and listing ask-history traces,
+  - separate admin UI at `/admin` (linked from assistant page) for PDF upload, webpage ingest, indexed document monitoring, and ask-history review,
+  - admin-only backend APIs for listing/deleting/re-ingesting documents and listing ask-history traces,
   - document deletion includes confirmation in UI and immediate removal of DB rows plus storage assets.
+  - super-admin login flow and role management API/UI (promote/demote `user` and `admin`).
 - Webpage ingestion v1:
   - admin-only ingest endpoint and UI action for URL ingestion with `docs_set` grouping metadata,
   - stores HTML snapshots for traceability and re-ingest support (`documents.source_storage_key`),

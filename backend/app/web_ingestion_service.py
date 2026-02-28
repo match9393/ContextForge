@@ -610,6 +610,7 @@ def ingest_webpage_document(
     docs_set_name: str | None = None,
     parent_document_id: int | None = None,
     from_discovered_link_id: int | None = None,
+    force_reingest: bool = False,
 ) -> dict[str, Any]:
     normalized_url = normalize_url(source_url)
     docs_set_id = _ensure_docs_set(
@@ -621,7 +622,7 @@ def ingest_webpage_document(
     )
 
     existing = _find_existing_web_document(conn, docs_set_id=docs_set_id, normalized_url=normalized_url)
-    if existing:
+    if existing and not force_reingest:
         if from_discovered_link_id is not None:
             _mark_discovered_link(
                 conn,

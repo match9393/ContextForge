@@ -2,7 +2,7 @@ import { getServerSession } from "next-auth";
 import { NextResponse } from "next/server";
 
 import { authOptions } from "@/lib/auth";
-import { isAdminEmail } from "@/lib/admin";
+import { resolveAdminAccess } from "@/lib/admin-access";
 
 const backendUrl = process.env.BACKEND_INTERNAL_URL || "http://backend:8000";
 
@@ -19,7 +19,8 @@ export async function GET(request: Request) {
   if (!session?.user?.email) {
     return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
   }
-  if (!isAdminEmail(session.user.email)) {
+  const { allowed, superadminToken } = resolveAdminAccess(session.user.email);
+  if (!allowed) {
     return NextResponse.json({ error: "Forbidden" }, { status: 403 });
   }
 
@@ -37,6 +38,7 @@ export async function GET(request: Request) {
       headers: {
         "X-User-Email": session.user.email,
         "X-User-Name": session.user.name || "",
+        ...(superadminToken ? { "X-Superadmin-Token": superadminToken } : {}),
       },
       cache: "no-store",
     },

@@ -32,6 +32,15 @@ def upload_bytes(*, bucket_name: str, key: str, data: bytes, content_type: str) 
     )
 
 
+def download_bytes(*, bucket_name: str, key: str) -> bytes:
+    s3 = get_s3_client()
+    response = s3.get_object(Bucket=bucket_name, Key=key)
+    body = response.get("Body")
+    if body is None:
+        return b""
+    return body.read()
+
+
 def generate_presigned_get_url(*, bucket_name: str, key: str, expires_seconds: int = 3600) -> str:
     public_endpoint = settings.s3_public_endpoint.strip() or settings.s3_endpoint
     s3 = get_s3_client(endpoint_url=public_endpoint)

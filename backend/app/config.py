@@ -8,6 +8,10 @@ class Settings(BaseSettings):
 
     allowed_google_domains: str = "netaxis.be"
     admin_emails: str = ""
+    superadmin_username: str = "superadmin"
+    superadmin_password_hash: str = ""
+    superadmin_session_secret: str = "change_me_superadmin_secret"
+    superadmin_session_ttl_seconds: int = 43200
 
     answer_provider: str = "openai"
     vision_provider: str = "openai"

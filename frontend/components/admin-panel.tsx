@@ -75,6 +75,19 @@ type AdminAskHistoryResponse = {
   history: AdminAskHistory[];
 };
 
+type AdminUser = {
+  id: string;
+  email: string;
+  full_name?: string | null;
+  role: "user" | "admin" | "super_admin";
+  created_at: string;
+  last_login?: string | null;
+};
+
+type AdminUsersResponse = {
+  users: AdminUser[];
+};
+
 function formatDate(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
@@ -100,6 +113,7 @@ export function AdminPanel() {
   const [documents, setDocuments] = useState<AdminDocument[]>([]);
   const [docsSets, setDocsSets] = useState<AdminDocsSet[]>([]);
   const [history, setHistory] = useState<AdminAskHistory[]>([]);
+  const [users, setUsers] = useState<AdminUser[]>([]);
   const [discoveredLinks, setDiscoveredLinks] = useState<AdminDiscoveredLink[]>([]);
 
   const [loading, setLoading] = useState(true);
@@ -124,6 +138,11 @@ export function AdminPanel() {
   const [deleting, setDeleting] = useState(false);
   const [deleteDocsSetCandidate, setDeleteDocsSetCandidate] = useState<AdminDocsSet | null>(null);
   const [deletingDocsSet, setDeletingDocsSet] = useState(false);
+  const [reingestingDocumentId, setReingestingDocumentId] = useState<number | null>(null);
+  const [canManageUsers, setCanManageUsers] = useState(false);
+  const [roleTargetEmail, setRoleTargetEmail] = useState("");
+  const [roleTargetValue, setRoleTargetValue] = useState<"user" | "admin">("admin");
+  const [savingRole, setSavingRole] = useState(false);
 
   const selectedWebDocument = useMemo(() => {
     if (!selectedWebDocumentId) {
@@ -159,6 +178,21 @@ export function AdminPanel() {
     setHistory(data.history || []);
   }
 
+  async function loadUsersOptional() {
+    const response = await fetch("/api/admin/users?limit=300", { cache: "no-store" });
+    if (response.status === 403) {
+      setCanManageUsers(false);
+      setUsers([]);
+      return;
+    }
+    const data = (await response.json()) as AdminUsersResponse & { error?: string; detail?: string };
+    if (!response.ok) {
+      throw new Error(data.error || data.detail || "Failed to load users.");
+    }
+    setCanManageUsers(true);
+    setUsers(data.users || []);
+  }
+
   async function loadDiscoveredLinks(sourceDocumentId: number) {
     setLinksLoading(true);
     try {
@@ -179,7 +213,7 @@ export function AdminPanel() {
     setLoading(true);
     setError(null);
     try {
-      await Promise.all([loadDocuments(), loadDocsSets(), loadHistory()]);
+      await Promise.all([loadDocuments(), loadDocsSets(), loadHistory(), loadUsersOptional()]);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Failed to load admin data.");
     } finally {
@@ -355,6 +389,35 @@ export function AdminPanel() {
     }
   }
 
+  async function onReingestDocument(document: AdminDocument) {
+    setInfoMessage(null);
+    setReingestingDocumentId(document.id);
+    try {
+      const response = await fetch(`/api/admin/documents/${document.id}`, { method: "POST" });
+      const data = (await response.json()) as {
+        error?: string;
+        detail?: string;
+        old_document_id?: number;
+        new_document_id?: number;
+      };
+      if (!response.ok) {
+        setInfoMessage(data.error || data.detail || "Re-ingest failed.");
+        return;
+      }
+      setInfoMessage(
+        `Re-ingest completed: old document #${data.old_document_id ?? document.id}, new document #${data.new_document_id ?? "?"}.`,
+      );
+      if (selectedWebDocumentId === document.id) {
+        setSelectedWebDocumentId(data.new_document_id ?? null);
+      }
+      await Promise.all([loadDocuments(), loadDocsSets(), loadHistory()]);
+    } catch {
+      setInfoMessage("Re-ingest failed due to network error.");
+    } finally {
+      setReingestingDocumentId(null);
+    }
+  }
+
   async function confirmDelete() {
     if (!deleteCandidate) {
       return;
@@ -412,6 +475,37 @@ export function AdminPanel() {
       setInfoMessage("Docs set delete failed due to network error.");
     } finally {
       setDeletingDocsSet(false);
+    }
+  }
+
+  async function onSetUserRole(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const email = roleTargetEmail.trim();
+    if (!email) {
+      setInfoMessage("Please provide user email.");
+      return;
+    }
+
+    setSavingRole(true);
+    setInfoMessage(null);
+    try {
+      const response = await fetch("/api/admin/users/role", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, role: roleTargetValue }),
+      });
+      const data = (await response.json()) as { error?: string; detail?: string; email?: string; role?: string };
+      if (!response.ok) {
+        setInfoMessage(data.error || data.detail || "Failed to update user role.");
+        return;
+      }
+      setInfoMessage(`Updated role: ${data.email ?? email} -> ${data.role ?? roleTargetValue}.`);
+      setRoleTargetEmail("");
+      await loadUsersOptional();
+    } catch {
+      setInfoMessage("Failed to update user role due to network error.");
+    } finally {
+      setSavingRole(false);
     }
   }
 
@@ -576,9 +670,17 @@ export function AdminPanel() {
                       ) : null}
                       <button
                         type="button"
+                        className="button secondary"
+                        onClick={() => void onReingestDocument(document)}
+                        disabled={deleting || reingestingDocumentId !== null}
+                      >
+                        {reingestingDocumentId === document.id ? "Re-ingesting..." : "Re-ingest"}
+                      </button>
+                      <button
+                        type="button"
                         className="button danger"
                         onClick={() => setDeleteCandidate(document)}
-                        disabled={deleting}
+                        disabled={deleting || reingestingDocumentId !== null}
                       >
                         Delete
                       </button>
@@ -709,6 +811,58 @@ export function AdminPanel() {
           </div>
         )}
       </section>
+
+      {canManageUsers ? (
+        <section className="admin-card">
+          <h3>Users & Roles (Super-admin)</h3>
+          <form className="admin-upload-form" onSubmit={onSetUserRole}>
+            <input
+              type="email"
+              className="admin-url-input"
+              placeholder="user@company.com"
+              value={roleTargetEmail}
+              onChange={(event) => setRoleTargetEmail(event.target.value)}
+            />
+            <select
+              className="admin-select"
+              value={roleTargetValue}
+              onChange={(event) => setRoleTargetValue((event.target.value as "user" | "admin") || "admin")}
+            >
+              <option value="admin">admin</option>
+              <option value="user">user</option>
+            </select>
+            <button type="submit" disabled={savingRole}>
+              {savingRole ? "Saving..." : "Set role"}
+            </button>
+          </form>
+          {users.length === 0 ? (
+            <p className="meta">No users found.</p>
+          ) : (
+            <div className="table-wrap">
+              <table className="admin-table">
+                <thead>
+                  <tr>
+                    <th>Email</th>
+                    <th>Role</th>
+                    <th>Last Login</th>
+                    <th>Created</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {users.map((user) => (
+                    <tr key={user.id}>
+                      <td>{user.email}</td>
+                      <td>{user.role}</td>
+                      <td>{user.last_login ? formatDate(user.last_login) : "-"}</td>
+                      <td>{formatDate(user.created_at)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      ) : null}
 
       {deleteCandidate ? (
         <div className="modal-backdrop" role="dialog" aria-modal="true">

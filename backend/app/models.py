@@ -72,6 +72,12 @@ class AdminDeleteDocumentResponse(BaseModel):
     status: Literal["deleted"]
 
 
+class AdminReingestDocumentResponse(BaseModel):
+    old_document_id: int
+    new_document_id: int
+    status: Literal["reingested"]
+
+
 class AdminAskHistoryItem(BaseModel):
     id: int
     created_at: datetime
@@ -110,6 +116,46 @@ class AdminDeleteDocsSetResponse(BaseModel):
     docs_set_id: int
     deleted_documents_count: int
     status: Literal["deleted"]
+
+
+class SuperadminLoginRequest(BaseModel):
+    username: str = Field(min_length=1, max_length=120)
+    password: str = Field(min_length=1, max_length=200)
+
+
+class SuperadminLoginResponse(BaseModel):
+    token: str
+    expires_in_seconds: int
+    role: Literal["super_admin"]
+
+
+class SuperadminVerifyResponse(BaseModel):
+    valid: bool
+    role: Literal["super_admin"]
+
+
+class AdminUserItem(BaseModel):
+    id: str
+    email: str
+    full_name: str | None = None
+    role: Literal["user", "admin", "super_admin"]
+    created_at: datetime
+    last_login: datetime | None = None
+
+
+class AdminUsersResponse(BaseModel):
+    users: list[AdminUserItem]
+
+
+class AdminSetUserRoleRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=320)
+    role: Literal["user", "admin"]
+
+
+class AdminSetUserRoleResponse(BaseModel):
+    email: str
+    role: Literal["user", "admin"]
+    status: Literal["updated"]
 
 
 class AdminDiscoveredLinkItem(BaseModel):

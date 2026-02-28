@@ -58,6 +58,13 @@ code {
   gap: 12px;
 }
 
+.top-row-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
 .button {
   display: inline-flex;
   align-items: center;
@@ -232,6 +239,13 @@ code {
   flex-wrap: wrap;
 }
 
+.admin-login-form {
+  margin-top: 10px;
+  display: grid;
+  gap: 10px;
+  max-width: 420px;
+}
+
 .admin-upload-form input[type="file"] {
   max-width: 100%;
 }
@@ -268,7 +282,23 @@ code {
   cursor: pointer;
 }
 
+.admin-login-form button {
+  justify-self: start;
+  padding: 9px 12px;
+  border-radius: 10px;
+  border: 1px solid #0f172a;
+  background: #0f172a;
+  color: #ffffff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
 .admin-upload-form button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.admin-login-form button:disabled {
   opacity: 0.7;
   cursor: not-allowed;
 }
