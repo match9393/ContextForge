@@ -141,6 +141,12 @@ code {
   margin: 0 0 8px;
 }
 
+.answer-text {
+  margin: 0 0 10px;
+  white-space: pre-wrap;
+  line-height: 1.55;
+}
+
 .meta {
   color: #334155;
   font-size: 13px;

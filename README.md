@@ -201,6 +201,7 @@ All runtime configuration must come from environment variables (never hardcode s
 Notes:
 - "Conditionally" means required only when selected provider needs it.
 - `ADMIN_EMAILS` must be configured for admin ingestion, document deletion, and ask-history visibility.
+- In Docker Compose runs, keep `BACKEND_INTERNAL_URL=http://backend:8000` (container-to-container address), even when host `BACKEND_PORT` is mapped to another port like `18000`.
 - Webpage ingestion accepts only publicly reachable URLs and blocks private/local network addresses.
 - Linked-page batch ingest is intentionally constrained to discovered same-domain links from one source page per run.
 - Never commit real secrets. Use placeholders in docs and examples.

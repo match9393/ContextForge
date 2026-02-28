@@ -273,8 +273,9 @@ def _generate_answer_openai(question: str, rows: list[dict[str, Any]], fallback_
     system_prompt = (
         "You are ContextForge, an enterprise knowledge assistant. "
         "Write concise, practical, synthesized answers in your own words. "
-        "Do not output citation blocks. "
-        "If no indexed context is provided, explicitly say that you are answering from model knowledge."
+        "Use plain text only: no markdown headings and no citation blocks. "
+        "Do not mention retrieval internals (indexed context, chunks, vector search, source mechanics) unless the user explicitly asks. "
+        "Only mention that you are using general model knowledge when no relevant indexed context is available."
     )
     user_prompt = (
         f"Question:\n{question}\n\n"
@@ -283,9 +284,9 @@ def _generate_answer_openai(question: str, rows: list[dict[str, Any]], fallback_
         f"Indexed context:\n{context_text}\n\n"
         "Answer requirements:\n"
         "1. Provide a direct answer.\n"
-        "2. Mention whether indexed context was found.\n"
-        "3. If context is absent, provide best-effort domain guidance.\n"
-        "4. No citation formatting."
+        "2. Prefer short paragraphs and short bullet lists.\n"
+        "3. If context is absent, provide best-effort domain guidance and say it is based on general knowledge.\n"
+        "4. Do not include source citations or retrieval commentary."
     )
     try:
         return generate_text_response(

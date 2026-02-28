@@ -72,7 +72,7 @@ export function AskPanel() {
       {result ? (
         <section className="answer-card">
           <h2>Answer</h2>
-          <p>{result.answer}</p>
+          <div className="answer-text">{result.answer}</div>
           <p className="meta">
             Confidence: {result.confidence_percent}% | Grounded in indexed sources: {result.grounded ? "yes" : "no"}
           </p>

@@ -9,6 +9,18 @@ type AskRequest = {
 
 const backendUrl = process.env.BACKEND_INTERNAL_URL || "http://backend:8000";
 
+async function readBackendPayload(response: Response) {
+  const raw = await response.text();
+  if (!raw) {
+    return { error: `Backend returned empty response (${response.status}).` };
+  }
+  try {
+    return JSON.parse(raw);
+  } catch {
+    return { error: raw };
+  }
+}
+
 export async function POST(request: Request) {
   const session = await getServerSession(authOptions);
 
@@ -32,6 +44,6 @@ export async function POST(request: Request) {
     cache: "no-store",
   });
 
-  const data = await response.json();
+  const data = await readBackendPayload(response);
   return NextResponse.json(data, { status: response.status });
 }
