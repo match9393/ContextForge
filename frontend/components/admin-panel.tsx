@@ -68,6 +68,8 @@ export function AdminPanel() {
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
   const [uploadMessage, setUploadMessage] = useState<string | null>(null);
+  const [webUrl, setWebUrl] = useState("");
+  const [ingestingWeb, setIngestingWeb] = useState(false);
 
   const [deleteCandidate, setDeleteCandidate] = useState<AdminDocument | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -167,6 +169,47 @@ export function AdminPanel() {
     }
   }
 
+  async function onIngestWebpage(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    setUploadMessage(null);
+    const normalizedUrl = webUrl.trim();
+    if (!normalizedUrl) {
+      setUploadMessage("Please enter a webpage URL.");
+      return;
+    }
+
+    setIngestingWeb(true);
+    try {
+      const response = await fetch("/api/admin/webpages", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ url: normalizedUrl }),
+      });
+      const data = (await response.json()) as {
+        error?: string;
+        detail?: string;
+        document_id?: number;
+        source_name?: string;
+      };
+      if (!response.ok) {
+        setUploadMessage(data.error || data.detail || "Webpage ingestion failed.");
+        return;
+      }
+
+      setUploadMessage(
+        `Ingested webpage #${data.document_id ?? "?"}${data.source_name ? ` (${data.source_name})` : ""}.`,
+      );
+      setWebUrl("");
+      await loadDocuments();
+    } catch {
+      setUploadMessage("Webpage ingestion failed due to a network error.");
+    } finally {
+      setIngestingWeb(false);
+    }
+  }
+
   return (
     <section className="admin-shell">
       <div className="admin-head">
@@ -189,6 +232,26 @@ export function AdminPanel() {
           </button>
         </form>
         {uploadMessage ? <p className="meta">{uploadMessage}</p> : null}
+      </section>
+
+      <section className="admin-card">
+        <h3>Webpage Ingestion</h3>
+        <form className="admin-upload-form" onSubmit={onIngestWebpage}>
+          <input
+            type="url"
+            className="admin-url-input"
+            placeholder="https://example.com/knowledge-page"
+            value={webUrl}
+            onChange={(event) => setWebUrl(event.target.value)}
+          />
+          <button type="submit" disabled={ingestingWeb}>
+            {ingestingWeb ? "Ingesting..." : "Ingest Webpage"}
+          </button>
+        </form>
+        <p className="meta">
+          v1 supports publicly reachable pages. Google delegated pages are supported only when token configuration is
+          provided.
+        </p>
       </section>
 
       {error ? <p className="error">{error}</p> : null}

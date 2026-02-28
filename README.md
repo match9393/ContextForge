@@ -44,8 +44,10 @@ Before first login, configure this callback in your Google OAuth app.
 - Backend API health: `http://localhost:${BACKEND_PORT}/api/v1/health`
 - Frontend ask proxy endpoint: `http://localhost:${FRONTEND_PORT}/api/ask`
 - Frontend admin document endpoints: `http://localhost:${FRONTEND_PORT}/api/admin/documents`
+- Frontend admin webpage ingest endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/webpages`
 - Frontend admin ask-history endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/ask-history`
 - Backend PDF ingest endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/ingest/pdf`
+- Backend webpage ingest endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/ingest/webpage`
 - Backend admin documents list endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/documents`
 - Backend admin document delete endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/documents/{document_id}`
 - Backend admin ask-history list endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/ask-history`
@@ -74,6 +76,14 @@ curl -X POST "http://localhost:${BACKEND_PORT:-8000}/api/v1/admin/ingest/pdf" \
   -H "x-user-email: your-email@netaxis.be" \
   -H "x-user-name: Your Name" \
   -F "file=@Fusion4Broadworks_Product_Description.pdf"
+```
+- Test webpage ingestion (example):
+```bash
+curl -X POST "http://localhost:${BACKEND_PORT:-8000}/api/v1/admin/ingest/webpage" \
+  -H "content-type: application/json" \
+  -H "x-user-email: your-email@netaxis.be" \
+  -H "x-user-name: Your Name" \
+  -d '{"url":"https://example.com"}'
 ```
 
 ## Configuration
@@ -111,6 +121,11 @@ All runtime configuration must come from environment variables (never hardcode s
 | `OPENAI_API_KEY` | Conditionally | - | `<secret>` | Required when a provider is `openai` | Yes |
 | `OPENAI_TIMEOUT_SECONDS` | No | `60` | `60` | Timeout for OpenAI Responses API requests | No |
 | `OLLAMA_BASE_URL` | Conditionally | `http://ollama:11434` | `http://host.docker.internal:11434` | Required when a provider is `ollama` | No |
+| `WEB_FETCH_TIMEOUT_SECONDS` | No | `20` | `20` | Timeout for webpage fetch requests during ingest | No |
+| `WEB_INGEST_MAX_CHARS` | No | `120000` | `100000` | Maximum normalized webpage text characters to keep before chunking | No |
+| `WEB_INGEST_MAX_CHUNKS` | No | `120` | `150` | Maximum number of chunks embedded per webpage ingest | No |
+| `WEB_INGEST_USER_AGENT` | No | `ContextForgeBot/1.0` | `ContextForgeBot/1.0 (+https://app.company.com)` | User-Agent used when fetching webpages | No |
+| `GOOGLE_DELEGATED_BEARER_TOKEN` | No | - | `<oauth_access_token>` | Optional bearer token for Google delegated page fetches (docs/drive/sites) | Yes |
 | `POSTGRES_DB` | Yes | `contextforge` | `contextforge` | Postgres database name | No |
 | `POSTGRES_USER` | Yes | `contextforge` | `contextforge` | Postgres user | No |
 | `POSTGRES_PASSWORD` | Yes | `contextforge` | `<secret>` | Postgres password | Yes |
@@ -139,6 +154,7 @@ All runtime configuration must come from environment variables (never hardcode s
 Notes:
 - "Conditionally" means required only when selected provider needs it.
 - `ADMIN_EMAILS` must be configured for admin ingestion, document deletion, and ask-history visibility.
+- Webpage ingestion accepts only publicly reachable URLs and blocks private/local network addresses.
 - Never commit real secrets. Use placeholders in docs and examples.
 
 ## Documentation Governance
@@ -166,6 +182,10 @@ Notes:
   - admin-only frontend UI for PDF upload, indexed document monitoring, and ask-history review,
   - admin-only backend APIs for listing/deleting documents and listing ask-history traces,
   - document deletion includes confirmation in UI and immediate removal of DB rows plus storage assets.
+- Webpage ingestion v1:
+  - admin-only ingest endpoint and UI action for URL ingestion,
+  - fetches and normalizes webpage text, chunks and embeds it, and stores as `source_type='web'`,
+  - supports public pages by default; Google delegated fetch can use optional bearer token configuration.
 
 ## Provider Behavior (Current)
 - `ANSWER_PROVIDER=openai`: implemented. Backend calls OpenAI Responses API using `ANSWER_MODEL` and `OPENAI_API_KEY`.

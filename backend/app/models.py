@@ -27,6 +27,18 @@ class IngestPdfResponse(BaseModel):
     storage_key: str
 
 
+class IngestWebRequest(BaseModel):
+    url: str = Field(min_length=8, max_length=2048)
+
+
+class IngestWebResponse(BaseModel):
+    document_id: int
+    source_name: str
+    source_url: str
+    status: str
+    text_chunk_count: int
+
+
 class AdminDocumentItem(BaseModel):
     id: int
     source_type: str

@@ -21,8 +21,11 @@ from app.models import (
     AskRequest,
     AskResponse,
     IngestPdfResponse,
+    IngestWebRequest,
+    IngestWebResponse,
 )
 from app.storage import delete_prefix
+from app.web_ingestion_service import WebIngestionError, ingest_webpage_document
 
 
 @asynccontextmanager
@@ -163,6 +166,33 @@ def ingest_pdf(
             raise HTTPException(status_code=500, detail=str(exc)) from exc
 
     return IngestPdfResponse(**result)
+
+
+@app.post("/api/v1/admin/ingest/webpage", response_model=IngestWebResponse)
+def ingest_webpage(
+    payload: IngestWebRequest,
+    x_user_email: str | None = Header(default=None),
+    x_user_name: str | None = Header(default=None),
+) -> IngestWebResponse:
+    user_email = _require_auth_email(x_user_email)
+    _require_admin_email(user_email)
+
+    source_url = payload.url.strip()
+    if not source_url:
+        raise HTTPException(status_code=400, detail="URL cannot be empty")
+
+    with get_connection() as conn:
+        user_id = ensure_user(conn, user_email, x_user_name)
+        try:
+            result = ingest_webpage_document(
+                conn,
+                user_id=user_id,
+                source_url=source_url,
+            )
+        except WebIngestionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return IngestWebResponse(**result)
 
 
 @app.get("/api/v1/admin/documents", response_model=AdminDocumentsResponse)

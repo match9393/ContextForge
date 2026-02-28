@@ -18,6 +18,11 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_timeout_seconds: int = 60
     ask_top_k: int = 6
+    web_fetch_timeout_seconds: int = 20
+    web_ingest_max_chars: int = 120000
+    web_ingest_max_chunks: int = 120
+    web_ingest_user_agent: str = "ContextForgeBot/1.0"
+    google_delegated_bearer_token: str = ""
 
     database_url: str = "postgresql://contextforge:contextforge@postgres:5432/contextforge"
     redis_url: str = "redis://redis:6379/0"
