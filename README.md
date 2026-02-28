@@ -33,10 +33,34 @@ docker compose up -d --build
 docker compose down -v
 ```
 
-Google OAuth callback for local development:
-- `http://localhost:3000/api/auth/callback/google`
+## Google OAuth Setup (Step-by-Step)
+Before first login, create Google OAuth credentials and place them in `.env`.
 
-Before first login, configure this callback in your Google OAuth app.
+1. Create (or select) a Google Cloud project.
+2. Open Google Cloud Console and go to Google Auth Platform.
+3. Configure consent screen/branding:
+   - Set app name.
+   - Set support email.
+   - Set developer contact email.
+   - Choose audience (`External` is typical for local dev).
+   - If asked, add your Google account as a test user.
+4. Go to `APIs & Services` -> `Credentials`.
+5. Click `Create credentials` -> `OAuth client ID`.
+6. Choose application type: `Web application`.
+7. Add OAuth URLs using your frontend port:
+   - Authorized JavaScript origin: `http://localhost:${FRONTEND_PORT}`
+   - Authorized redirect URI: `http://localhost:${FRONTEND_PORT}/api/auth/callback/google`
+8. Create the client and copy values into `.env`:
+   - `GOOGLE_CLIENT_ID=...`
+   - `GOOGLE_CLIENT_SECRET=...`
+9. Ensure `NEXTAUTH_URL` matches your frontend URL, for example:
+   - `NEXTAUTH_URL=http://localhost:${FRONTEND_PORT}`
+10. Restart services:
+```bash
+docker compose up -d --build
+```
+
+If your Google Workspace policy blocks external OAuth apps, you may need a Workspace admin to allow or publish the app.
 
 ## Service Endpoints (Local)
 - Frontend: `http://localhost:${FRONTEND_PORT}` (default `http://localhost:3000`)
