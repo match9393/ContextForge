@@ -5,7 +5,7 @@ ContextForge is an LLM-first knowledge assistant for company documents and appro
 ## Current State
 This repository now includes an MVP scaffold:
 - `frontend` (Next.js app)
-- `backend` (FastAPI API with DB bootstrap, `/api/v1/ask`, and PDF ingestion endpoint)
+- `backend` (FastAPI API with DB bootstrap, `/api/v1/ask`, admin APIs, and PDF ingestion endpoint)
 - `worker` (background process skeleton)
 - `docker-compose.yml` (single stack file)
 - Product docs and PRD (`prd_v2_en.md`)
@@ -43,7 +43,12 @@ Before first login, configure this callback in your Google OAuth app.
 - Backend health: `http://localhost:${BACKEND_PORT}/health` (default `http://localhost:8000/health`)
 - Backend API health: `http://localhost:${BACKEND_PORT}/api/v1/health`
 - Frontend ask proxy endpoint: `http://localhost:${FRONTEND_PORT}/api/ask`
+- Frontend admin document endpoints: `http://localhost:${FRONTEND_PORT}/api/admin/documents`
+- Frontend admin ask-history endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/ask-history`
 - Backend PDF ingest endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/ingest/pdf`
+- Backend admin documents list endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/documents`
+- Backend admin document delete endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/documents/{document_id}`
+- Backend admin ask-history list endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/ask-history`
 - MinIO API: `http://localhost:9000`
 - MinIO Console: `http://localhost:9001`
 - Postgres: `localhost:5432`
@@ -88,6 +93,7 @@ All runtime configuration must come from environment variables (never hardcode s
 | `API_URL` | No | `http://localhost:8000` | `https://api.company.com` | Public API URL | No |
 | `BACKEND_INTERNAL_URL` | No | `http://backend:8000` | `http://backend:8000` | Backend URL used by frontend server routes | No |
 | `ALLOWED_GOOGLE_DOMAINS` | Yes | `netaxis.be` | `netaxis.be,google.com` | Allowed Google email domains (`*` for all) | No |
+| `ADMIN_EMAILS` | Yes | - | `alice@netaxis.be,bob@netaxis.be` | Comma-separated admin users allowed to access admin APIs/UI (`*` for all allowed-domain users) | No |
 | `GOOGLE_CLIENT_ID` | Yes | - | `123...apps.googleusercontent.com` | Google SSO OAuth client id | No |
 | `GOOGLE_CLIENT_SECRET` | Yes | - | `<secret>` | Google SSO OAuth client secret | Yes |
 | `NEXTAUTH_URL` | Yes | `http://localhost:3000` | `https://app.company.com` | Auth callback base URL | No |
@@ -132,6 +138,7 @@ All runtime configuration must come from environment variables (never hardcode s
 
 Notes:
 - "Conditionally" means required only when selected provider needs it.
+- `ADMIN_EMAILS` must be configured for admin ingestion, document deletion, and ask-history visibility.
 - Never commit real secrets. Use placeholders in docs and examples.
 
 ## Documentation Governance
@@ -155,6 +162,10 @@ Notes:
   - extracts page images, filters by vision policy, captions eligible images with the configured vision provider, and embeds captions,
   - creates OpenAI embeddings for text chunks and image captions,
   - stores vectorized chunks in Postgres/pgvector and marks document ready.
+- Admin panel v1:
+  - admin-only frontend UI for PDF upload, indexed document monitoring, and ask-history review,
+  - admin-only backend APIs for listing/deleting documents and listing ask-history traces,
+  - document deletion includes confirmation in UI and immediate removal of DB rows plus storage assets.
 
 ## Provider Behavior (Current)
 - `ANSWER_PROVIDER=openai`: implemented. Backend calls OpenAI Responses API using `ANSWER_MODEL` and `OPENAI_API_KEY`.

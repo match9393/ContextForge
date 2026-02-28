@@ -1,7 +1,9 @@
 import { getServerSession } from "next-auth";
 
+import { AdminPanel } from "@/components/admin-panel";
 import { AskPanel } from "@/components/ask-panel";
 import { authOptions } from "@/lib/auth";
+import { isAdminEmail } from "@/lib/admin";
 
 export default async function HomePage() {
   const session = await getServerSession(authOptions);
@@ -20,6 +22,8 @@ export default async function HomePage() {
     );
   }
 
+  const canAccessAdmin = isAdminEmail(session.user.email);
+
   return (
     <main className="page">
       <section className="card">
@@ -33,6 +37,7 @@ export default async function HomePage() {
           </a>
         </div>
         <AskPanel />
+        {canAccessAdmin ? <AdminPanel /> : null}
       </section>
     </main>
   );

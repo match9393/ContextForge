@@ -39,3 +39,29 @@ def generate_presigned_get_url(*, bucket_name: str, key: str, expires_seconds: i
         Params={"Bucket": bucket_name, "Key": key},
         ExpiresIn=expires_seconds,
     )
+
+
+def delete_prefix(*, bucket_name: str, prefix: str) -> int:
+    s3 = get_s3_client()
+    deleted = 0
+    continuation_token: str | None = None
+
+    while True:
+        list_kwargs = {"Bucket": bucket_name, "Prefix": prefix}
+        if continuation_token:
+            list_kwargs["ContinuationToken"] = continuation_token
+        result = s3.list_objects_v2(**list_kwargs)
+
+        contents = result.get("Contents", [])
+        keys = [{"Key": item["Key"]} for item in contents]
+        if keys:
+            for i in range(0, len(keys), 1000):
+                batch = keys[i : i + 1000]
+                s3.delete_objects(Bucket=bucket_name, Delete={"Objects": batch, "Quiet": True})
+                deleted += len(batch)
+
+        if not result.get("IsTruncated"):
+            break
+        continuation_token = result.get("NextContinuationToken")
+
+    return deleted

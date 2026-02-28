@@ -77,6 +77,12 @@ code {
   border-color: #d0d7de;
 }
 
+.button.danger {
+  background: #b91c1c;
+  border-color: #b91c1c;
+  color: #ffffff;
+}
+
 .chat-shell {
   margin-top: 20px;
   display: grid;
@@ -157,4 +163,121 @@ code {
 .error {
   color: #b91c1c;
   font-weight: 600;
+}
+
+.admin-shell {
+  margin-top: 24px;
+  display: grid;
+  gap: 14px;
+}
+
+.admin-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.admin-head h2 {
+  margin: 0;
+  font-size: 20px;
+}
+
+.admin-card {
+  border: 1px solid #d0d7de;
+  border-radius: 12px;
+  padding: 14px;
+  background: #f8fafc;
+}
+
+.admin-card h3 {
+  margin: 0 0 10px;
+  font-size: 16px;
+}
+
+.admin-upload-form {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.admin-upload-form input[type="file"] {
+  max-width: 100%;
+}
+
+.admin-upload-form button {
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 1px solid #0f172a;
+  background: #0f172a;
+  color: #ffffff;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.admin-upload-form button:disabled {
+  opacity: 0.7;
+  cursor: not-allowed;
+}
+
+.table-wrap {
+  overflow-x: auto;
+}
+
+.admin-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 13px;
+}
+
+.admin-table th,
+.admin-table td {
+  border-bottom: 1px solid #e2e8f0;
+  padding: 8px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.admin-table th {
+  color: #334155;
+  white-space: nowrap;
+}
+
+.admin-table td {
+  color: #0f172a;
+}
+
+.modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(2, 6, 23, 0.5);
+  display: grid;
+  place-items: center;
+  padding: 16px;
+  z-index: 20;
+}
+
+.modal-card {
+  width: min(460px, 100%);
+  background: #ffffff;
+  border: 1px solid #d0d7de;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 14px 30px rgba(15, 23, 42, 0.2);
+}
+
+.modal-card h3 {
+  margin: 0 0 8px;
+}
+
+.modal-card p {
+  margin: 0;
+}
+
+.modal-actions {
+  margin-top: 14px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
 }

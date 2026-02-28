@@ -7,6 +7,7 @@ class Settings(BaseSettings):
     api_url: str = "http://localhost:8000"
 
     allowed_google_domains: str = "netaxis.be"
+    admin_emails: str = ""
 
     answer_provider: str = "openai"
     vision_provider: str = "openai"
@@ -51,6 +52,17 @@ class Settings(BaseSettings):
         domain = email.split("@")[-1].lower()
         allowed = [item.strip().lower() for item in configured.split(",") if item.strip()]
         return domain in allowed
+
+    def is_admin_email(self, email: str) -> bool:
+        configured = self.admin_emails.strip()
+        if configured == "*":
+            return True
+        if not configured:
+            return False
+
+        normalized_email = email.strip().lower()
+        allowed = [item.strip().lower() for item in configured.split(",") if item.strip()]
+        return normalized_email in allowed
 
 
 settings = Settings()
