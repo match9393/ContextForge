@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     web_fetch_timeout_seconds: int = 20
     web_ingest_max_chars: int = 120000
     web_ingest_max_chunks: int = 120
+    web_ingest_max_images: int = 60
     web_ingest_user_agent: str = "ContextForgeBot/1.0"
     google_delegated_bearer_token: str = ""
 

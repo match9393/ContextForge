@@ -17,15 +17,19 @@ from app.ingestion_service import IngestionError, ingest_pdf_document
 from app.models import (
     AdminAskHistoryResponse,
     AdminDeleteDocumentResponse,
+    AdminDiscoveredLinksResponse,
+    AdminDocsSetsResponse,
     AdminDocumentsResponse,
     AskRequest,
     AskResponse,
+    IngestLinkedPagesRequest,
+    IngestLinkedPagesResponse,
     IngestPdfResponse,
     IngestWebRequest,
     IngestWebResponse,
 )
 from app.storage import delete_prefix
-from app.web_ingestion_service import WebIngestionError, ingest_webpage_document
+from app.web_ingestion_service import WebIngestionError, ingest_linked_pages_batch, ingest_webpage_document
 
 
 @asynccontextmanager
@@ -188,11 +192,39 @@ def ingest_webpage(
                 conn,
                 user_id=user_id,
                 source_url=source_url,
+                docs_set_id=payload.docs_set_id,
+                docs_set_name=payload.docs_set_name,
+                parent_document_id=payload.parent_document_id,
+                from_discovered_link_id=payload.discovered_link_id,
             )
         except WebIngestionError as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return IngestWebResponse(**result)
+    return IngestWebResponse(**{k: v for k, v in result.items() if k != "reused_existing"})
+
+
+@app.post("/api/v1/admin/ingest/webpage/linked", response_model=IngestLinkedPagesResponse)
+def ingest_linked_webpages(
+    payload: IngestLinkedPagesRequest,
+    x_user_email: str | None = Header(default=None),
+    x_user_name: str | None = Header(default=None),
+) -> IngestLinkedPagesResponse:
+    user_email = _require_auth_email(x_user_email)
+    _require_admin_email(user_email)
+
+    with get_connection() as conn:
+        user_id = ensure_user(conn, user_email, x_user_name)
+        try:
+            result = ingest_linked_pages_batch(
+                conn,
+                user_id=user_id,
+                source_document_id=payload.source_document_id,
+                max_pages=payload.max_pages,
+            )
+        except WebIngestionError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return IngestLinkedPagesResponse(**result)
 
 
 @app.get("/api/v1/admin/documents", response_model=AdminDocumentsResponse)
@@ -214,12 +246,17 @@ def list_documents(
                   d.source_type,
                   d.source_name,
                   d.source_url,
+                  d.source_storage_key,
+                  d.source_parent_document_id,
+                  d.docs_set_id,
+                  ds.name AS docs_set_name,
                   d.status,
                   d.text_chunk_count,
                   d.image_count,
                   d.created_at,
                   u.email AS created_by_email
                 FROM documents d
+                LEFT JOIN docs_sets ds ON ds.id = d.docs_set_id
                 LEFT JOIN users u ON u.id = d.created_by
                 ORDER BY d.id DESC
                 LIMIT %s;
@@ -299,3 +336,77 @@ def list_ask_history(
             rows = cur.fetchall()
 
     return AdminAskHistoryResponse(history=rows)
+
+
+@app.get("/api/v1/admin/docs-sets", response_model=AdminDocsSetsResponse)
+def list_docs_sets(
+    limit: int = Query(default=100, ge=1, le=500),
+    x_user_email: str | None = Header(default=None),
+    x_user_name: str | None = Header(default=None),
+) -> AdminDocsSetsResponse:
+    user_email = _require_auth_email(x_user_email)
+    _require_admin_email(user_email)
+
+    with get_connection() as conn:
+        ensure_user(conn, user_email, x_user_name)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  ds.id,
+                  ds.name,
+                  ds.root_url,
+                  ds.source_type,
+                  ds.created_at,
+                  u.email AS created_by_email,
+                  COUNT(d.id)::integer AS document_count
+                FROM docs_sets ds
+                LEFT JOIN users u ON u.id = ds.created_by
+                LEFT JOIN documents d ON d.docs_set_id = ds.id
+                GROUP BY ds.id, u.email
+                ORDER BY ds.id DESC
+                LIMIT %s;
+                """,
+                (limit,),
+            )
+            rows = cur.fetchall()
+    return AdminDocsSetsResponse(docs_sets=rows)
+
+
+@app.get("/api/v1/admin/discovered-links", response_model=AdminDiscoveredLinksResponse)
+def list_discovered_links(
+    source_document_id: int = Query(..., ge=1),
+    limit: int = Query(default=200, ge=1, le=1000),
+    x_user_email: str | None = Header(default=None),
+    x_user_name: str | None = Header(default=None),
+) -> AdminDiscoveredLinksResponse:
+    user_email = _require_auth_email(x_user_email)
+    _require_admin_email(user_email)
+
+    with get_connection() as conn:
+        ensure_user(conn, user_email, x_user_name)
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                  id,
+                  source_document_id,
+                  docs_set_id,
+                  url,
+                  normalized_url,
+                  link_text,
+                  same_domain,
+                  status,
+                  ingested_document_id,
+                  last_error,
+                  created_at,
+                  updated_at
+                FROM web_discovered_links
+                WHERE source_document_id = %s
+                ORDER BY id ASC
+                LIMIT %s;
+                """,
+                (source_document_id, limit),
+            )
+            rows = cur.fetchall()
+    return AdminDiscoveredLinksResponse(links=rows)

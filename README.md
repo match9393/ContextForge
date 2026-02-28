@@ -45,9 +45,15 @@ Before first login, configure this callback in your Google OAuth app.
 - Frontend ask proxy endpoint: `http://localhost:${FRONTEND_PORT}/api/ask`
 - Frontend admin document endpoints: `http://localhost:${FRONTEND_PORT}/api/admin/documents`
 - Frontend admin webpage ingest endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/webpages`
+- Frontend admin linked-page ingest endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/webpages/linked`
+- Frontend admin docs-set endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/docs-sets`
+- Frontend admin discovered-links endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/discovered-links`
 - Frontend admin ask-history endpoint: `http://localhost:${FRONTEND_PORT}/api/admin/ask-history`
 - Backend PDF ingest endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/ingest/pdf`
 - Backend webpage ingest endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/ingest/webpage`
+- Backend linked-page ingest endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/ingest/webpage/linked`
+- Backend docs-set list endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/docs-sets`
+- Backend discovered-links list endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/discovered-links?source_document_id={id}`
 - Backend admin documents list endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/documents`
 - Backend admin document delete endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/documents/{document_id}`
 - Backend admin ask-history list endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/ask-history`
@@ -83,7 +89,23 @@ curl -X POST "http://localhost:${BACKEND_PORT:-8000}/api/v1/admin/ingest/webpage
   -H "content-type: application/json" \
   -H "x-user-email: your-email@netaxis.be" \
   -H "x-user-name: Your Name" \
-  -d '{"url":"https://example.com"}'
+  -d '{"url":"https://example.com/docs/start","docs_set_name":"Example API Docs"}'
+```
+- Add another page to the same docs set (example uses existing `docs_set_id=1`):
+```bash
+curl -X POST "http://localhost:${BACKEND_PORT:-8000}/api/v1/admin/ingest/webpage" \
+  -H "content-type: application/json" \
+  -H "x-user-email: your-email@netaxis.be" \
+  -H "x-user-name: Your Name" \
+  -d '{"url":"https://example.com/docs/auth","docs_set_id":1}'
+```
+- Test linked-page batch ingest from discovered links (same-domain only):
+```bash
+curl -X POST "http://localhost:${BACKEND_PORT:-8000}/api/v1/admin/ingest/webpage/linked" \
+  -H "content-type: application/json" \
+  -H "x-user-email: your-email@netaxis.be" \
+  -H "x-user-name: Your Name" \
+  -d '{"source_document_id": 12, "max_pages": 20}'
 ```
 
 ## Configuration
@@ -124,6 +146,7 @@ All runtime configuration must come from environment variables (never hardcode s
 | `WEB_FETCH_TIMEOUT_SECONDS` | No | `20` | `20` | Timeout for webpage fetch requests during ingest | No |
 | `WEB_INGEST_MAX_CHARS` | No | `120000` | `100000` | Maximum normalized webpage text characters to keep before chunking | No |
 | `WEB_INGEST_MAX_CHUNKS` | No | `120` | `150` | Maximum number of chunks embedded per webpage ingest | No |
+| `WEB_INGEST_MAX_IMAGES` | No | `60` | `80` | Maximum discovered webpage images to download/process per page | No |
 | `WEB_INGEST_USER_AGENT` | No | `ContextForgeBot/1.0` | `ContextForgeBot/1.0 (+https://app.company.com)` | User-Agent used when fetching webpages | No |
 | `GOOGLE_DELEGATED_BEARER_TOKEN` | No | - | `<oauth_access_token>` | Optional bearer token for Google delegated page fetches (docs/drive/sites) | Yes |
 | `POSTGRES_DB` | Yes | `contextforge` | `contextforge` | Postgres database name | No |
@@ -155,6 +178,7 @@ Notes:
 - "Conditionally" means required only when selected provider needs it.
 - `ADMIN_EMAILS` must be configured for admin ingestion, document deletion, and ask-history visibility.
 - Webpage ingestion accepts only publicly reachable URLs and blocks private/local network addresses.
+- Linked-page batch ingest is intentionally constrained to discovered same-domain links from one source page per run.
 - Never commit real secrets. Use placeholders in docs and examples.
 
 ## Documentation Governance
@@ -183,14 +207,19 @@ Notes:
   - admin-only backend APIs for listing/deleting documents and listing ask-history traces,
   - document deletion includes confirmation in UI and immediate removal of DB rows plus storage assets.
 - Webpage ingestion v1:
-  - admin-only ingest endpoint and UI action for URL ingestion,
-  - fetches and normalizes webpage text, chunks and embeds it, and stores as `source_type='web'`,
+  - admin-only ingest endpoint and UI action for URL ingestion with `docs_set` grouping metadata,
+  - stores HTML snapshots for traceability and re-ingest support (`documents.source_storage_key`),
+  - extracts narrative text plus structured table chunks (`table_summary` and `table_row` with numeric-aware metadata),
+  - discovers webpage images, downloads eligible public assets, captions images with vision model, and embeds captions,
+  - runs unified retrieval across text chunks, table chunks, and image captions,
+  - discovers page links and stores them in admin-visible discovered-links queue,
+  - supports one-by-one link ingest and controlled same-domain batch ingest (`max_pages` bounded),
   - supports public pages by default; Google delegated fetch can use optional bearer token configuration.
 
 ## Provider Behavior (Current)
 - `ANSWER_PROVIDER=openai`: implemented. Backend calls OpenAI Responses API using `ANSWER_MODEL` and `OPENAI_API_KEY`.
 - `ANSWER_PROVIDER=ollama`: placeholder only. Request succeeds with a clear "not implemented yet" message; real Ollama generation is still pending.
-- `VISION_PROVIDER=openai`: implemented for PDF image caption generation during ingest.
+- `VISION_PROVIDER=openai`: implemented for PDF and webpage image caption generation during ingest.
 - `VISION_PROVIDER=ollama`: placeholder only (not implemented yet).
 - `EMBEDDINGS_PROVIDER=openai`: implemented for ingestion and retrieval.
 - `EMBEDDINGS_PROVIDER=ollama`: not implemented yet for ingestion/retrieval.

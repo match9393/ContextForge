@@ -57,6 +57,11 @@ Existing internal search tools are typically chunk-centric and require technical
 ### 5.2 Admin Panel (`/admin`)
 - Documents: list, filter, view metadata, download, delete with confirmation.
 - Ingest: multi-file PDF upload queue with per-file status.
+- Docs Sets: group related web pages (for example a multi-page API manual) into one logical set.
+- Discovered Links: for each ingested web page, list parsed links and their ingest status (`discovered`, `ingested`, `failed`).
+- Linked-Page Controls:
+  - ingest selected discovered links one-by-one,
+  - run bounded same-domain batch ingest with strict limits (`max_pages`).
 - Re-ingest: admins can re-run ingestion for an existing document in v1.
 - Ask History & Audit: admin-only visibility into Q/A events and retrieval evidence metadata.
 - Users & Roles: assign/remove `admin` role by email.
@@ -73,7 +78,14 @@ Existing internal search tools are typically chunk-centric and require technical
   6. Mark document status `ready`.
 - For Web:
   - Public fetch and Google OAuth delegation fetch only (v1 scope).
-  - HTML snapshot + text/image processing path equivalent to PDF.
+  - Ingest exactly the submitted URL (no automatic recursive crawl in v1).
+  - Save HTML snapshot for traceability and deterministic re-ingest.
+  - Extract:
+    - narrative text chunks,
+    - structured table chunks (`table_summary` + `table_row`, with numeric metadata),
+    - discovered web images (download + vision-caption embeddings using the same multimodal flow as PDF images).
+  - Parse links from the submitted page and persist them as admin-visible discovered links for controlled follow-up ingestion.
+  - Web pages can be attached to a `docs_set` so multi-page documentation is grouped as one logical source collection.
 
 ## 6. Functional Requirements
 ### FR-001 Authentication and Domain Access
@@ -133,7 +145,10 @@ Acceptance criteria:
 ### FR-005 Retrieval and Answer Generation (`/ask`)
 - Pipeline:
   1. Embed user question.
-  2. Dense retrieval from `text_chunks` and `image_captions`.
+  2. Dense retrieval from:
+    - narrative/text chunks,
+    - structured table chunks,
+    - image captions.
   3. Build context pack.
   4. Generate answer using answer provider.
 - LLM decides whether answer includes:
@@ -180,7 +195,12 @@ Acceptance criteria:
 - Cross-document questions return a unified answer without requiring formal source citation formatting.
 
 ### FR-009 Data Model (Minimum Tables)
-- `documents`, `text_chunks`, `document_images`, `image_captions`, `users`, `ask_history`.
+- Core tables:
+  - `documents`, `text_chunks`, `document_images`, `image_captions`, `users`, `ask_history`.
+- Web ingestion control tables:
+  - `docs_sets` (logical grouping of related webpages),
+  - `web_discovered_links` (parsed links, same-domain flag, ingest status, ingest mapping).
+- `text_chunks` must support typed chunks (`text`, `table_summary`, `table_row`) and structured metadata payload.
 - `users.role` values: `user | admin | super_admin`.
 - `ask_history` stores:
   - asking user identity (`user_id`, user email),
@@ -191,6 +211,23 @@ Acceptance criteria:
 
 Acceptance criteria:
 - Delete-document action uses a confirmation modal and then performs immediate hard delete of the document and derived assets.
+
+### FR-016 Web Docs-Set and Link-Control Semantics
+- A submitted webpage URL creates or joins exactly one `docs_set` (admin-selected existing set or admin-provided new set name).
+- The system must not silently merge different `docs_set` values.
+- The ingestion pipeline must:
+  - ingest exactly the submitted page,
+  - store discovered links from that page,
+  - avoid uncontrolled recursive crawling.
+- Admin can choose between:
+  - single-link ingest actions,
+  - bounded same-domain batch ingest (`max_pages` hard-limited).
+- If a discovered link already exists as an ingested page in the same `docs_set`, it should be marked as already ingested (no duplicate page creation).
+
+Acceptance criteria:
+- Multi-page API docs can be represented as one logical `docs_set` across many individually ingested URLs.
+- Admin UI clearly shows discovered link status transitions (`discovered` -> `ingested` / `failed`).
+- Batch ingest cannot exceed configured per-request page limits.
 
 ### FR-010 Public Asset Controls
 - Public asset access (thumbnails, diagrams, PDF download) is controlled by environment flags (example: `PUBLIC_DOCUMENT_DOWNLOADS`).

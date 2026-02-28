@@ -25,7 +25,7 @@ body {
 }
 
 .card {
-  max-width: 760px;
+  max-width: 1120px;
   width: 100%;
   padding: 24px;
   background: var(--card);
@@ -215,6 +215,19 @@ code {
   font-size: 14px;
 }
 
+.admin-select,
+.admin-number-input {
+  padding: 9px 10px;
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  font-size: 14px;
+  background: #ffffff;
+}
+
+.admin-number-input {
+  width: 100px;
+}
+
 .admin-upload-form button {
   padding: 8px 12px;
   border-radius: 10px;
@@ -255,6 +268,12 @@ code {
 
 .admin-table td {
   color: #0f172a;
+}
+
+.admin-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
 }
 
 .modal-backdrop {

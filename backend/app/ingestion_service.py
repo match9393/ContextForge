@@ -320,11 +320,12 @@ def ingest_pdf_document(
                 UPDATE documents
                 SET
                   status = 'ready',
+                  source_storage_key = %s,
                   text_chunk_count = %s,
                   image_count = %s
                 WHERE id = %s;
                 """,
-                (len(chunks), len(images), document_id),
+                (document_key, len(chunks), len(images), document_id),
             )
         conn.commit()
 

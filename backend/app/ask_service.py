@@ -71,6 +71,7 @@ def _retrieve_chunks_embedding(conn, question: str, broaden: bool) -> list[dict[
         SELECT
           t.id AS chunk_id,
           t.text AS chunk_text,
+          t.chunk_type AS chunk_type,
           d.id AS document_id,
           d.source_name,
           d.source_type,
@@ -78,7 +79,7 @@ def _retrieve_chunks_embedding(conn, question: str, broaden: bool) -> list[dict[
           NULL::bigint AS image_id,
           NULL::text AS image_storage_key,
           NULL::integer AS page_number,
-          'text'::text AS evidence_type,
+          t.chunk_type AS evidence_type,
           (1 - (t.embedding <=> %s::vector)) AS similarity
         FROM text_chunks t
         JOIN documents d ON d.id = t.document_id
@@ -90,6 +91,7 @@ def _retrieve_chunks_embedding(conn, question: str, broaden: bool) -> list[dict[
         SELECT
           NULL::bigint AS chunk_id,
           ic.caption_text AS chunk_text,
+          'image'::text AS chunk_type,
           d.id AS document_id,
           d.source_name,
           d.source_type,
@@ -130,6 +132,7 @@ def _retrieve_chunks_keyword(conn, question: str, broaden: bool) -> list[dict[st
         SELECT
           t.id AS chunk_id,
           t.text AS chunk_text,
+          t.chunk_type AS chunk_type,
           d.id AS document_id,
           d.source_name,
           d.source_type,
@@ -137,7 +140,7 @@ def _retrieve_chunks_keyword(conn, question: str, broaden: bool) -> list[dict[st
           NULL::bigint AS image_id,
           NULL::text AS image_storage_key,
           NULL::integer AS page_number,
-          'text'::text AS evidence_type,
+          t.chunk_type AS evidence_type,
           NULL::double precision AS similarity
         FROM text_chunks t
         JOIN documents d ON d.id = t.document_id
@@ -150,6 +153,7 @@ def _retrieve_chunks_keyword(conn, question: str, broaden: bool) -> list[dict[st
         SELECT
           NULL::bigint AS chunk_id,
           ic.caption_text AS chunk_text,
+          'image'::text AS chunk_type,
           d.id AS document_id,
           d.source_name,
           d.source_type,
@@ -197,7 +201,20 @@ def _collect_webpage_links(rows: list[dict[str, Any]]) -> list[str]:
 def _collect_image_urls(rows: list[dict[str, Any]]) -> list[str]:
     urls: list[str] = []
     seen_keys: set[str] = set()
+    context_document_ids = {
+        int(row["document_id"])
+        for row in rows
+        if row.get("document_id") is not None and row.get("evidence_type") != "image"
+    }
+
     for row in rows:
+        if row.get("evidence_type") != "image":
+            continue
+
+        row_document_id = row.get("document_id")
+        if context_document_ids and row_document_id is not None and int(row_document_id) not in context_document_ids:
+            continue
+
         storage_key = row.get("image_storage_key")
         if not storage_key:
             continue
@@ -240,10 +257,11 @@ def _context_rows(rows: list[dict[str, Any]]) -> str:
         source_type = row.get("source_type") or "unknown"
         source_url = row.get("source_url") or ""
         evidence_type = row.get("evidence_type") or "text"
+        chunk_type = row.get("chunk_type") or "text"
         page = row.get("page_number")
         page_part = f" page={page}" if page is not None else ""
         lines.append(
-            f"- source={source_name} type={source_type} evidence={evidence_type}{page_part} url={source_url}\n"
+            f"- source={source_name} type={source_type} evidence={evidence_type} chunk_type={chunk_type}{page_part} url={source_url}\n"
             f"  chunk={normalized[:500]}"
         )
     return "\n".join(lines)
