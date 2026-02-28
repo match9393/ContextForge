@@ -1,0 +1,4 @@
+pydantic-settings==2.10.1
+redis==6.4.0
+psycopg[binary]==3.2.9
+boto3==1.40.0
