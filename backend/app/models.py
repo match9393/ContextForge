@@ -13,3 +13,13 @@ class AskResponse(BaseModel):
     grounded: bool
     fallback_mode: Literal["none", "broadened_retrieval", "model_knowledge", "out_of_scope"]
     webpage_links: list[str]
+
+
+class IngestPdfResponse(BaseModel):
+    document_id: int
+    source_name: str
+    status: str
+    page_count: int
+    text_chunk_count: int
+    image_count: int
+    storage_key: str

@@ -1,6 +1,6 @@
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, Header, HTTPException
+from fastapi import FastAPI, File, Header, HTTPException, UploadFile
 from psycopg import Error as PsycopgError
 
 from app.ask_service import (
@@ -13,7 +13,8 @@ from app.ask_service import (
 )
 from app.config import settings
 from app.db import get_connection, init_db
-from app.models import AskRequest, AskResponse
+from app.ingestion_service import IngestionError, ingest_pdf_document
+from app.models import AskRequest, AskResponse, IngestPdfResponse
 
 
 @asynccontextmanager
@@ -113,3 +114,37 @@ def ask(
         fallback_mode=fallback_mode,
         webpage_links=webpage_links,
     )
+
+
+@app.post("/api/v1/admin/ingest/pdf", response_model=IngestPdfResponse)
+async def ingest_pdf(
+    file: UploadFile = File(...),
+    x_user_email: str | None = Header(default=None),
+    x_user_name: str | None = Header(default=None),
+) -> IngestPdfResponse:
+    if not x_user_email:
+        raise HTTPException(status_code=401, detail="Missing user identity header")
+
+    if not settings.is_allowed_google_domain(x_user_email):
+        raise HTTPException(status_code=403, detail="User domain is not allowed")
+
+    if not file.filename or not file.filename.lower().endswith(".pdf"):
+        raise HTTPException(status_code=400, detail="Only PDF files are supported")
+
+    file_bytes = await file.read()
+    if not file_bytes:
+        raise HTTPException(status_code=400, detail="Uploaded PDF is empty")
+
+    with get_connection() as conn:
+        user_id = ensure_user(conn, x_user_email, x_user_name)
+        try:
+            result = ingest_pdf_document(
+                conn,
+                user_id=user_id,
+                source_name=file.filename,
+                pdf_bytes=file_bytes,
+            )
+        except IngestionError as exc:
+            raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    return IngestPdfResponse(**result)

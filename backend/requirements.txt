@@ -4,3 +4,5 @@ pydantic-settings==2.10.1
 psycopg[binary]==3.2.9
 redis==6.4.0
 boto3==1.40.0
+python-multipart==0.0.20
+pypdf==6.0.0

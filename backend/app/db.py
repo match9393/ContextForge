@@ -19,3 +19,7 @@ def init_db() -> None:
 
 def get_connection() -> psycopg.Connection:
     return psycopg.connect(settings.database_url, row_factory=dict_row)
+
+
+def embedding_to_vector_literal(embedding: list[float]) -> str:
+    return "[" + ",".join(f"{value:.8f}" for value in embedding) + "]"

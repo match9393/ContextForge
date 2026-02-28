@@ -5,7 +5,7 @@ ContextForge is an LLM-first knowledge assistant for company documents and appro
 ## Current State
 This repository now includes an MVP scaffold:
 - `frontend` (Next.js app)
-- `backend` (FastAPI API with DB bootstrap and `/api/v1/ask`)
+- `backend` (FastAPI API with DB bootstrap, `/api/v1/ask`, and PDF ingestion endpoint)
 - `worker` (background process skeleton)
 - `docker-compose.yml` (single stack file)
 - Product docs and PRD (`prd_v2_en.md`)
@@ -43,6 +43,7 @@ Before first login, configure this callback in your Google OAuth app.
 - Backend health: `http://localhost:${BACKEND_PORT}/health` (default `http://localhost:8000/health`)
 - Backend API health: `http://localhost:${BACKEND_PORT}/api/v1/health`
 - Frontend ask proxy endpoint: `http://localhost:${FRONTEND_PORT}/api/ask`
+- Backend PDF ingest endpoint: `http://localhost:${BACKEND_PORT}/api/v1/admin/ingest/pdf`
 - MinIO API: `http://localhost:9000`
 - MinIO Console: `http://localhost:9001`
 - Postgres: `localhost:5432`
@@ -60,6 +61,13 @@ docker compose ps
 - Tail backend logs:
 ```bash
 docker compose logs -f backend
+```
+- Test PDF ingestion (example):
+```bash
+curl -X POST "http://localhost:${BACKEND_PORT:-8000}/api/v1/admin/ingest/pdf" \
+  -H "x-user-email: your-email@netaxis.be" \
+  -H "x-user-name: Your Name" \
+  -F "file=@Fusion4Broadworks_Product_Description.pdf"
 ```
 
 ## Configuration
@@ -92,6 +100,7 @@ All runtime configuration must come from environment variables (never hardcode s
 | `ANSWER_MODEL` | No | `gpt-5.2` | `gpt-5.2` | Answering model id | No |
 | `VISION_MODEL` | No | `gpt-5.2` | `gpt-5.2` | Vision model id | No |
 | `EMBEDDINGS_MODEL` | No | `text-embedding-3-large` | `text-embedding-3-large` | Embedding model id | No |
+| `ASK_TOP_K` | No | `6` | `8` | Number of top retrieved chunks used for answering | No |
 | `OPENAI_API_KEY` | Conditionally | - | `<secret>` | Required when a provider is `openai` | Yes |
 | `OPENAI_TIMEOUT_SECONDS` | No | `60` | `60` | Timeout for OpenAI Responses API requests | No |
 | `OLLAMA_BASE_URL` | Conditionally | `http://ollama:11434` | `http://host.docker.internal:11434` | Required when a provider is `ollama` | No |
@@ -112,6 +121,9 @@ All runtime configuration must come from environment variables (never hardcode s
 | `IMAGE_MAX_ASPECT_RATIO` | No | `8` | `8` | Vision eligibility maximum aspect ratio | No |
 | `IMAGE_MAX_PER_PAGE` | No | `5` | `5` | Max images captioned per page | No |
 | `CAPTION_MAX_CHARS` | No | `1200` | `1200` | Vision caption max length | No |
+| `INGEST_CHUNK_SIZE_CHARS` | No | `1200` | `1500` | Character length for text chunking during PDF ingest | No |
+| `INGEST_CHUNK_OVERLAP_CHARS` | No | `180` | `200` | Chunk overlap size during PDF ingest | No |
+| `INGEST_MAX_CHUNKS` | No | `200` | `300` | Safety cap on number of chunks embedded per ingest request | No |
 | `ASK_LATENCY_P50_TARGET_MS` | No | `10000` | `10000` | p50 latency target | No |
 | `ASK_LATENCY_P95_TARGET_MS` | No | `25000` | `25000` | p95 latency target | No |
 | `WORKER_POLL_SECONDS` | No | `5` | `10` | Worker heartbeat/poll interval | No |
@@ -131,13 +143,20 @@ Notes:
 - Backend startup schema bootstrap (`users`, `documents`, `text_chunks`, `document_images`, `image_captions`, `ask_history`).
 - First `/api/v1/ask` vertical slice:
   - requires authenticated user identity via frontend proxy,
-  - performs simple retrieval attempt + broadened retry,
+  - performs embedding-based retrieval + broadened retry (keyword fallback when needed),
   - applies no-retrieval fallback policy,
   - persists ask history and evidence metadata.
+- PDF ingestion vertical slice (`/api/v1/admin/ingest/pdf`):
+  - stores PDF in object storage,
+  - extracts text and chunks it,
+  - creates OpenAI embeddings for chunks,
+  - stores vectorized chunks in Postgres/pgvector and marks document ready.
 
 ## Provider Behavior (Current)
 - `ANSWER_PROVIDER=openai`: implemented. Backend calls OpenAI Responses API using `ANSWER_MODEL` and `OPENAI_API_KEY`.
 - `ANSWER_PROVIDER=ollama`: placeholder only. Request succeeds with a clear "not implemented yet" message; real Ollama generation is still pending.
+- `EMBEDDINGS_PROVIDER=openai`: implemented for ingestion and retrieval.
+- `EMBEDDINGS_PROVIDER=ollama`: not implemented yet for ingestion/retrieval.
 
 ## Git Workflow
 - Use short-lived feature branches from `main`.

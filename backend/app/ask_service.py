@@ -1,12 +1,11 @@
-import json
 import re
 from typing import Any
-from urllib.error import HTTPError, URLError
-from urllib.request import Request, urlopen
 
 from psycopg.types.json import Jsonb
 
 from app.config import settings
+from app.db import embedding_to_vector_literal
+from app.openai_client import OpenAIClientError, embed_texts, generate_text_response
 
 OFF_TOPIC_TERMS = {
     "weather",
@@ -47,6 +46,48 @@ def tokenize(question: str, broaden: bool) -> list[str]:
 
 
 def retrieve_chunks(conn, question: str, broaden: bool = False) -> list[dict[str, Any]]:
+    rows = _retrieve_chunks_embedding(conn, question, broaden)
+    if rows:
+        return rows
+    return _retrieve_chunks_keyword(conn, question, broaden)
+
+
+def _retrieve_chunks_embedding(conn, question: str, broaden: bool) -> list[dict[str, Any]]:
+    if settings.embeddings_provider.lower().strip() != "openai":
+        return []
+
+    try:
+        vectors = embed_texts([question], model=settings.embeddings_model)
+    except OpenAIClientError:
+        return []
+    if not vectors:
+        return []
+
+    query_vector = embedding_to_vector_literal(vectors[0])
+    limit = max(settings.ask_top_k + (4 if broaden else 0), 1)
+
+    sql = """
+        SELECT
+          t.id AS chunk_id,
+          t.text AS chunk_text,
+          d.id AS document_id,
+          d.source_name,
+          d.source_type,
+          d.source_url,
+          (1 - (t.embedding <=> %s::vector)) AS similarity
+        FROM text_chunks t
+        JOIN documents d ON d.id = t.document_id
+        WHERE t.embedding IS NOT NULL
+        ORDER BY t.embedding <=> %s::vector
+        LIMIT %s;
+    """
+    with conn.cursor() as cur:
+        cur.execute(sql, (query_vector, query_vector, limit))
+        rows = cur.fetchall()
+    return rows
+
+
+def _retrieve_chunks_keyword(conn, question: str, broaden: bool) -> list[dict[str, Any]]:
     tokens = tokenize(question, broaden)
     if not tokens:
         return []
@@ -59,7 +100,8 @@ def retrieve_chunks(conn, question: str, broaden: bool = False) -> list[dict[str
           d.id AS document_id,
           d.source_name,
           d.source_type,
-          d.source_url
+          d.source_url,
+          NULL::double precision AS similarity
         FROM text_chunks t
         JOIN documents d ON d.id = t.document_id
         WHERE {conditions}
@@ -67,7 +109,7 @@ def retrieve_chunks(conn, question: str, broaden: bool = False) -> list[dict[str
         LIMIT %s;
     """
     params = [f"%{token}%" for token in tokens]
-    params.append(6 if broaden else 3)
+    params.append(max(settings.ask_top_k + (4 if broaden else 0), 1))
 
     with conn.cursor() as cur:
         cur.execute(sql, params)
@@ -118,23 +160,7 @@ def _context_rows(rows: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def _extract_openai_text(payload: dict[str, Any]) -> str:
-    direct = str(payload.get("output_text", "")).strip()
-    if direct:
-        return direct
-
-    collected: list[str] = []
-    for item in payload.get("output", []):
-        for part in item.get("content", []):
-            if part.get("type") == "output_text" and part.get("text"):
-                collected.append(str(part["text"]))
-    return "\n".join(collected).strip()
-
-
 def _generate_answer_openai(question: str, rows: list[dict[str, Any]], fallback_mode: str) -> str:
-    if not settings.openai_api_key:
-        raise AnswerProviderError("OPENAI_API_KEY is required when ANSWER_PROVIDER=openai")
-
     grounded = "yes" if rows else "no"
     context_text = _context_rows(rows)
     system_prompt = (
@@ -154,48 +180,15 @@ def _generate_answer_openai(question: str, rows: list[dict[str, Any]], fallback_
         "3. If context is absent, provide best-effort domain guidance.\n"
         "4. No citation formatting."
     )
-
-    request_payload = {
-        "model": settings.answer_model,
-        "input": [
-            {
-                "role": "system",
-                "content": [{"type": "input_text", "text": system_prompt}],
-            },
-            {
-                "role": "user",
-                "content": [{"type": "input_text", "text": user_prompt}],
-            },
-        ],
-        "max_output_tokens": 700,
-    }
-    request_data = json.dumps(request_payload).encode("utf-8")
-
-    request = Request(
-        url="https://api.openai.com/v1/responses",
-        data=request_data,
-        method="POST",
-        headers={
-            "Authorization": f"Bearer {settings.openai_api_key}",
-            "Content-Type": "application/json",
-        },
-    )
-
     try:
-        with urlopen(request, timeout=settings.openai_timeout_seconds) as response:
-            body = response.read().decode("utf-8")
-    except HTTPError as exc:
-        details = exc.read().decode("utf-8", errors="ignore")
-        raise AnswerProviderError(f"OpenAI request failed ({exc.code}): {details[:300]}") from exc
-    except URLError as exc:
-        raise AnswerProviderError(f"OpenAI network error: {exc.reason}") from exc
-
-    payload = json.loads(body)
-    output_text = _extract_openai_text(payload)
-    if not output_text:
-        raise AnswerProviderError("OpenAI returned an empty answer")
-
-    return output_text
+        return generate_text_response(
+            model=settings.answer_model,
+            system_prompt=system_prompt,
+            user_prompt=user_prompt,
+            max_output_tokens=700,
+        )
+    except OpenAIClientError as exc:
+        raise AnswerProviderError(str(exc)) from exc
 
 
 def _generate_answer_ollama_placeholder(question: str, rows: list[dict[str, Any]], fallback_mode: str) -> str:

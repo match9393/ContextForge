@@ -12,8 +12,10 @@ class Settings(BaseSettings):
     vision_provider: str = "openai"
     embeddings_provider: str = "openai"
     answer_model: str = "gpt-5.2"
+    embeddings_model: str = "text-embedding-3-large"
     openai_api_key: str = ""
     openai_timeout_seconds: int = 60
+    ask_top_k: int = 6
 
     database_url: str = "postgresql://contextforge:contextforge@postgres:5432/contextforge"
     redis_url: str = "redis://redis:6379/0"
@@ -21,9 +23,14 @@ class Settings(BaseSettings):
     s3_endpoint: str = "http://minio:9000"
     s3_access_key: str = "minioadmin"
     s3_secret_key: str = "minioadmin"
+    s3_bucket_documents: str = "documents"
+    s3_bucket_assets: str = "assets"
 
     ask_latency_p50_target_ms: int = 10000
     ask_latency_p95_target_ms: int = 25000
+    ingest_chunk_size_chars: int = 1200
+    ingest_chunk_overlap_chars: int = 180
+    ingest_max_chunks: int = 200
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
