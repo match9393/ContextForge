@@ -19,6 +19,52 @@ OFF_TOPIC_TERMS = {
     "lottery",
 }
 
+STOPWORDS = {
+    "a",
+    "about",
+    "an",
+    "and",
+    "are",
+    "as",
+    "at",
+    "be",
+    "build",
+    "building",
+    "by",
+    "can",
+    "for",
+    "from",
+    "how",
+    "i",
+    "in",
+    "is",
+    "it",
+    "me",
+    "my",
+    "of",
+    "on",
+    "or",
+    "our",
+    "tell",
+    "the",
+    "their",
+    "those",
+    "to",
+    "what",
+    "with",
+    "words",
+    "you",
+    "your",
+}
+
+NAV_NOISE_PHRASES = {
+    "skip to content",
+    "main navigation",
+    "sidebar navigation",
+    "appearance menu",
+    "return to top",
+}
+
 
 class AnswerProviderError(Exception):
     """Raised when answer provider invocation fails."""
@@ -42,15 +88,124 @@ def ensure_user(conn, email: str, full_name: str | None) -> str:
 
 def tokenize(question: str, broaden: bool) -> list[str]:
     min_len = 3 if broaden else 4
-    tokens = [t for t in re.findall(r"[A-Za-z0-9]+", question.lower()) if len(t) >= min_len]
-    return tokens[:6]
+    raw = [t for t in re.findall(r"[A-Za-z0-9]+", question.lower()) if len(t) >= min_len]
+
+    tokens: list[str] = []
+    seen: set[str] = set()
+    for token in raw:
+        if token in STOPWORDS:
+            continue
+        if token in seen:
+            continue
+        seen.add(token)
+        tokens.append(token)
+
+    max_tokens = 12 if broaden else 10
+    return tokens[:max_tokens]
+
+
+def _row_dedupe_key(row: dict[str, Any]) -> str:
+    source_name = str(row.get("source_name") or "").strip().lower()
+    text_head = " ".join(str(row.get("chunk_text", "")).split())[:180]
+
+    chunk_id = row.get("chunk_id")
+    if chunk_id is not None and text_head:
+        return f"text:{source_name}:{text_head}"
+    if chunk_id is not None:
+        return f"chunk:{int(chunk_id)}"
+
+    image_id = row.get("image_id")
+    if image_id is not None:
+        return f"image:{int(image_id)}"
+
+    return f"fallback:{row.get('document_id')}:{text_head}"
+
+
+def _row_source_key(row: dict[str, Any]) -> tuple[str, str, str]:
+    return (
+        str(row.get("source_type") or "").strip().lower(),
+        str(row.get("source_name") or "").strip().lower(),
+        str(row.get("source_url") or "").strip().lower(),
+    )
+
+
+def _merge_retrieval_rows(
+    embedding_rows: list[dict[str, Any]],
+    keyword_rows: list[dict[str, Any]],
+    *,
+    limit: int,
+    broaden: bool,
+) -> list[dict[str, Any]]:
+    if limit <= 0:
+        return []
+
+    # Keep semantic ranking first, then fill lexical matches, while avoiding over-concentration
+    # on one duplicate source (for example multiple re-ingests of the same PDF).
+    combined = list(embedding_rows) + list(keyword_rows)
+    source_cap = 2 if broaden else 1
+
+    selected: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    source_counts: dict[tuple[str, str, str], int] = {}
+
+    def is_nav_noise(row: dict[str, Any]) -> bool:
+        text = " ".join(str(row.get("chunk_text", "")).split()).lower()
+        if not text:
+            return False
+        matches = sum(1 for phrase in NAV_NOISE_PHRASES if phrase in text)
+        return matches >= 2
+
+    for row in combined:
+        if is_nav_noise(row):
+            continue
+
+        row_key = _row_dedupe_key(row)
+        if row_key in seen_keys:
+            continue
+
+        source_key = _row_source_key(row)
+        source_count = source_counts.get(source_key, 0)
+        if source_count >= source_cap:
+            continue
+
+        selected.append(row)
+        seen_keys.add(row_key)
+        source_counts[source_key] = source_count + 1
+        if len(selected) >= limit:
+            return selected
+
+    # Second pass: if still below limit, relax source cap but keep dedupe.
+    # Prefer lexical matches first to capture concrete lists/labels.
+    supplemental = list(keyword_rows) + list(embedding_rows)
+    for row in supplemental:
+        if is_nav_noise(row):
+            continue
+        row_key = _row_dedupe_key(row)
+        if row_key in seen_keys:
+            continue
+        selected.append(row)
+        seen_keys.add(row_key)
+        if len(selected) >= limit:
+            break
+
+    return selected
 
 
 def retrieve_chunks(conn, question: str, broaden: bool = False) -> list[dict[str, Any]]:
-    rows = _retrieve_chunks_embedding(conn, question, broaden)
-    if rows:
-        return rows
-    return _retrieve_chunks_keyword(conn, question, broaden)
+    limit = max(settings.ask_top_k + (4 if broaden else 0), 1)
+    embedding_rows = _retrieve_chunks_embedding(conn, question, broaden)
+    keyword_rows = _retrieve_chunks_keyword(conn, question, broaden)
+
+    if not embedding_rows and not keyword_rows:
+        return []
+    if embedding_rows and not keyword_rows:
+        return embedding_rows[:limit]
+    if keyword_rows and not embedding_rows:
+        return keyword_rows[:limit]
+
+    merged = _merge_retrieval_rows(embedding_rows, keyword_rows, limit=limit, broaden=broaden)
+    merged.sort(key=lambda row: float(row.get("similarity") or -1.0), reverse=True)
+    return merged[:limit]
 
 
 def _retrieve_chunks_embedding(conn, question: str, broaden: bool) -> list[dict[str, Any]]:
@@ -66,6 +221,7 @@ def _retrieve_chunks_embedding(conn, question: str, broaden: bool) -> list[dict[
 
     query_vector = embedding_to_vector_literal(vectors[0])
     limit = max(settings.ask_top_k + (4 if broaden else 0), 1)
+    candidate_limit = min(limit * 3, 60)
 
     text_sql = """
         SELECT
@@ -84,6 +240,7 @@ def _retrieve_chunks_embedding(conn, question: str, broaden: bool) -> list[dict[
         FROM text_chunks t
         JOIN documents d ON d.id = t.document_id
         WHERE t.embedding IS NOT NULL
+          AND d.status = 'ready'
         ORDER BY t.embedding <=> %s::vector
         LIMIT %s;
     """
@@ -105,19 +262,20 @@ def _retrieve_chunks_embedding(conn, question: str, broaden: bool) -> list[dict[
         JOIN document_images di ON di.id = ic.image_id
         JOIN documents d ON d.id = di.document_id
         WHERE ic.embedding IS NOT NULL
+          AND d.status = 'ready'
         ORDER BY ic.embedding <=> %s::vector
         LIMIT %s;
     """
 
     with conn.cursor() as cur:
-        cur.execute(text_sql, (query_vector, query_vector, limit))
+        cur.execute(text_sql, (query_vector, query_vector, candidate_limit))
         text_rows = cur.fetchall()
-        cur.execute(image_sql, (query_vector, query_vector, limit))
+        cur.execute(image_sql, (query_vector, query_vector, candidate_limit))
         image_rows = cur.fetchall()
 
     combined = text_rows + image_rows
     combined.sort(key=lambda row: float(row.get("similarity") or -1.0), reverse=True)
-    return combined[:limit]
+    return combined[:candidate_limit]
 
 
 def _retrieve_chunks_keyword(conn, question: str, broaden: bool) -> list[dict[str, Any]]:
@@ -125,8 +283,12 @@ def _retrieve_chunks_keyword(conn, question: str, broaden: bool) -> list[dict[st
     if not tokens:
         return []
 
-    conditions = " OR ".join(["t.text ILIKE %s" for _ in tokens])
-    image_conditions = " OR ".join(["ic.caption_text ILIKE %s" for _ in tokens])
+    text_match = " OR ".join(["t.text ILIKE %s" for _ in tokens])
+    image_match = " OR ".join(["ic.caption_text ILIKE %s" for _ in tokens])
+    text_score = " + ".join(["CASE WHEN t.text ILIKE %s THEN 1 ELSE 0 END" for _ in tokens])
+    image_score = " + ".join(["CASE WHEN ic.caption_text ILIKE %s THEN 1 ELSE 0 END" for _ in tokens])
+    if "node" in tokens or "nodes" in tokens:
+        text_score = f"({text_score}) + (CASE WHEN t.text ILIKE '%%technical name:%%' THEN 3 ELSE 0 END)"
 
     text_sql = f"""
         SELECT
@@ -141,11 +303,11 @@ def _retrieve_chunks_keyword(conn, question: str, broaden: bool) -> list[dict[st
           NULL::text AS image_storage_key,
           NULL::integer AS page_number,
           t.chunk_type AS evidence_type,
-          NULL::double precision AS similarity
+          ({text_score})::double precision AS similarity
         FROM text_chunks t
         JOIN documents d ON d.id = t.document_id
-        WHERE {conditions}
-        ORDER BY t.id DESC
+        WHERE d.status = 'ready' AND ({text_match})
+        ORDER BY similarity DESC, t.id DESC
         LIMIT %s;
     """
 
@@ -162,25 +324,28 @@ def _retrieve_chunks_keyword(conn, question: str, broaden: bool) -> list[dict[st
           di.storage_key AS image_storage_key,
           di.page_number,
           'image'::text AS evidence_type,
-          NULL::double precision AS similarity
+          ({image_score})::double precision AS similarity
         FROM image_captions ic
         JOIN document_images di ON di.id = ic.image_id
         JOIN documents d ON d.id = di.document_id
-        WHERE {image_conditions}
-        ORDER BY ic.id DESC
+        WHERE d.status = 'ready' AND ({image_match})
+        ORDER BY similarity DESC, ic.id DESC
         LIMIT %s;
     """
 
     limit = max(settings.ask_top_k + (4 if broaden else 0), 1)
-    params = [f"%{token}%" for token in tokens] + [limit]
+    candidate_limit = min(limit * 4, 80)
+    like_tokens = [f"%{token}%" for token in tokens]
+    text_params = like_tokens + like_tokens + [candidate_limit]
+    image_params = like_tokens + like_tokens + [candidate_limit]
 
     with conn.cursor() as cur:
-        cur.execute(text_sql, params)
+        cur.execute(text_sql, text_params)
         text_rows = cur.fetchall()
-        cur.execute(image_sql, params)
+        cur.execute(image_sql, image_params)
         image_rows = cur.fetchall()
 
-    return (text_rows + image_rows)[:limit]
+    return (text_rows + image_rows)[:candidate_limit]
 
 
 def is_out_of_scope(question: str) -> bool:
@@ -251,7 +416,7 @@ def _context_rows(rows: list[dict[str, Any]]) -> str:
         return "No indexed context was retrieved."
 
     lines: list[str] = []
-    for row in rows[:6]:
+    for row in rows[:10]:
         normalized = " ".join(str(row.get("chunk_text", "")).split())
         source_name = row.get("source_name") or "unknown-source"
         source_type = row.get("source_type") or "unknown"
@@ -275,6 +440,8 @@ def _generate_answer_openai(question: str, rows: list[dict[str, Any]], fallback_
         "Write concise, practical, synthesized answers in your own words. "
         "Use plain text only: no markdown headings and no citation blocks. "
         "Do not mention retrieval internals (indexed context, chunks, vector search, source mechanics) unless the user explicitly asks. "
+        "If the context contains concrete lists (for example supported node types), provide the list directly and clearly. "
+        "Do not ask the user for more documents unless the requested information is truly absent from context. "
         "Only mention that you are using general model knowledge when no relevant indexed context is available."
     )
     user_prompt = (
