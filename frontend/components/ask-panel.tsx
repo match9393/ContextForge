@@ -8,6 +8,7 @@ type AskResponse = {
   grounded: boolean;
   fallback_mode: "none" | "broadened_retrieval" | "model_knowledge" | "out_of_scope";
   webpage_links: string[];
+  image_urls?: string[];
 };
 
 export function AskPanel() {
@@ -84,6 +85,20 @@ export function AskPanel() {
                   <li key={url}>
                     <a href={url} target="_blank" rel="noreferrer">
                       {url}
+                    </a>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ) : null}
+          {result.image_urls && result.image_urls.length > 0 ? (
+            <div className="links">
+              <h3>Image evidence</h3>
+              <ul>
+                {result.image_urls.map((url) => (
+                  <li key={url}>
+                    <a href={url} target="_blank" rel="noreferrer">
+                      Open image
                     </a>
                   </li>
                 ))}

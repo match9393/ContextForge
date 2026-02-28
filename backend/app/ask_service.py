@@ -6,6 +6,7 @@ from psycopg.types.json import Jsonb
 from app.config import settings
 from app.db import embedding_to_vector_literal
 from app.openai_client import OpenAIClientError, embed_texts, generate_text_response
+from app.storage import generate_presigned_get_url
 
 OFF_TOPIC_TERMS = {
     "weather",
@@ -66,7 +67,7 @@ def _retrieve_chunks_embedding(conn, question: str, broaden: bool) -> list[dict[
     query_vector = embedding_to_vector_literal(vectors[0])
     limit = max(settings.ask_top_k + (4 if broaden else 0), 1)
 
-    sql = """
+    text_sql = """
         SELECT
           t.id AS chunk_id,
           t.text AS chunk_text,
@@ -74,6 +75,10 @@ def _retrieve_chunks_embedding(conn, question: str, broaden: bool) -> list[dict[
           d.source_name,
           d.source_type,
           d.source_url,
+          NULL::bigint AS image_id,
+          NULL::text AS image_storage_key,
+          NULL::integer AS page_number,
+          'text'::text AS evidence_type,
           (1 - (t.embedding <=> %s::vector)) AS similarity
         FROM text_chunks t
         JOIN documents d ON d.id = t.document_id
@@ -81,10 +86,36 @@ def _retrieve_chunks_embedding(conn, question: str, broaden: bool) -> list[dict[
         ORDER BY t.embedding <=> %s::vector
         LIMIT %s;
     """
+    image_sql = """
+        SELECT
+          NULL::bigint AS chunk_id,
+          ic.caption_text AS chunk_text,
+          d.id AS document_id,
+          d.source_name,
+          d.source_type,
+          d.source_url,
+          di.id AS image_id,
+          di.storage_key AS image_storage_key,
+          di.page_number,
+          'image'::text AS evidence_type,
+          (1 - (ic.embedding <=> %s::vector)) AS similarity
+        FROM image_captions ic
+        JOIN document_images di ON di.id = ic.image_id
+        JOIN documents d ON d.id = di.document_id
+        WHERE ic.embedding IS NOT NULL
+        ORDER BY ic.embedding <=> %s::vector
+        LIMIT %s;
+    """
+
     with conn.cursor() as cur:
-        cur.execute(sql, (query_vector, query_vector, limit))
-        rows = cur.fetchall()
-    return rows
+        cur.execute(text_sql, (query_vector, query_vector, limit))
+        text_rows = cur.fetchall()
+        cur.execute(image_sql, (query_vector, query_vector, limit))
+        image_rows = cur.fetchall()
+
+    combined = text_rows + image_rows
+    combined.sort(key=lambda row: float(row.get("similarity") or -1.0), reverse=True)
+    return combined[:limit]
 
 
 def _retrieve_chunks_keyword(conn, question: str, broaden: bool) -> list[dict[str, Any]]:
@@ -93,7 +124,9 @@ def _retrieve_chunks_keyword(conn, question: str, broaden: bool) -> list[dict[st
         return []
 
     conditions = " OR ".join(["t.text ILIKE %s" for _ in tokens])
-    sql = f"""
+    image_conditions = " OR ".join(["ic.caption_text ILIKE %s" for _ in tokens])
+
+    text_sql = f"""
         SELECT
           t.id AS chunk_id,
           t.text AS chunk_text,
@@ -101,6 +134,10 @@ def _retrieve_chunks_keyword(conn, question: str, broaden: bool) -> list[dict[st
           d.source_name,
           d.source_type,
           d.source_url,
+          NULL::bigint AS image_id,
+          NULL::text AS image_storage_key,
+          NULL::integer AS page_number,
+          'text'::text AS evidence_type,
           NULL::double precision AS similarity
         FROM text_chunks t
         JOIN documents d ON d.id = t.document_id
@@ -108,14 +145,38 @@ def _retrieve_chunks_keyword(conn, question: str, broaden: bool) -> list[dict[st
         ORDER BY t.id DESC
         LIMIT %s;
     """
-    params = [f"%{token}%" for token in tokens]
-    params.append(max(settings.ask_top_k + (4 if broaden else 0), 1))
+
+    image_sql = f"""
+        SELECT
+          NULL::bigint AS chunk_id,
+          ic.caption_text AS chunk_text,
+          d.id AS document_id,
+          d.source_name,
+          d.source_type,
+          d.source_url,
+          di.id AS image_id,
+          di.storage_key AS image_storage_key,
+          di.page_number,
+          'image'::text AS evidence_type,
+          NULL::double precision AS similarity
+        FROM image_captions ic
+        JOIN document_images di ON di.id = ic.image_id
+        JOIN documents d ON d.id = di.document_id
+        WHERE {image_conditions}
+        ORDER BY ic.id DESC
+        LIMIT %s;
+    """
+
+    limit = max(settings.ask_top_k + (4 if broaden else 0), 1)
+    params = [f"%{token}%" for token in tokens] + [limit]
 
     with conn.cursor() as cur:
-        cur.execute(sql, params)
-        rows = cur.fetchall()
+        cur.execute(text_sql, params)
+        text_rows = cur.fetchall()
+        cur.execute(image_sql, params)
+        image_rows = cur.fetchall()
 
-    return rows
+    return (text_rows + image_rows)[:limit]
 
 
 def is_out_of_scope(question: str) -> bool:
@@ -133,6 +194,31 @@ def _collect_webpage_links(rows: list[dict[str, Any]]) -> list[str]:
     return webpage_links
 
 
+def _collect_image_urls(rows: list[dict[str, Any]]) -> list[str]:
+    urls: list[str] = []
+    seen_keys: set[str] = set()
+    for row in rows:
+        storage_key = row.get("image_storage_key")
+        if not storage_key:
+            continue
+        storage_key = str(storage_key)
+        if storage_key in seen_keys:
+            continue
+        seen_keys.add(storage_key)
+        try:
+            url = generate_presigned_get_url(
+                bucket_name=settings.s3_bucket_assets,
+                key=storage_key,
+                expires_seconds=3600,
+            )
+        except Exception:
+            continue
+        urls.append(url)
+        if len(urls) >= 3:
+            break
+    return urls
+
+
 def _confidence_for_mode(fallback_mode: str) -> int:
     if fallback_mode == "none":
         return 82
@@ -148,13 +234,16 @@ def _context_rows(rows: list[dict[str, Any]]) -> str:
         return "No indexed context was retrieved."
 
     lines: list[str] = []
-    for row in rows[:4]:
+    for row in rows[:6]:
         normalized = " ".join(str(row.get("chunk_text", "")).split())
         source_name = row.get("source_name") or "unknown-source"
         source_type = row.get("source_type") or "unknown"
         source_url = row.get("source_url") or ""
+        evidence_type = row.get("evidence_type") or "text"
+        page = row.get("page_number")
+        page_part = f" page={page}" if page is not None else ""
         lines.append(
-            f"- source={source_name} type={source_type} url={source_url}\n"
+            f"- source={source_name} type={source_type} evidence={evidence_type}{page_part} url={source_url}\n"
             f"  chunk={normalized[:500]}"
         )
     return "\n".join(lines)
@@ -205,8 +294,11 @@ def _generate_answer_ollama_placeholder(question: str, rows: list[dict[str, Any]
     )
 
 
-def build_answer(question: str, rows: list[dict[str, Any]], fallback_mode: str) -> tuple[str, int, bool, list[str]]:
+def build_answer(
+    question: str, rows: list[dict[str, Any]], fallback_mode: str
+) -> tuple[str, int, bool, list[str], list[str]]:
     webpage_links = _collect_webpage_links(rows)
+    image_urls = _collect_image_urls(rows)
 
     if fallback_mode == "out_of_scope":
         return (
@@ -214,6 +306,7 @@ def build_answer(question: str, rows: list[dict[str, Any]], fallback_mode: str) 
             "ContextForge (company knowledge and related domain topics).",
             _confidence_for_mode(fallback_mode),
             False,
+            [],
             [],
         )
 
@@ -227,7 +320,7 @@ def build_answer(question: str, rows: list[dict[str, Any]], fallback_mode: str) 
 
     grounded = bool(rows)
     confidence = _confidence_for_mode(fallback_mode)
-    return answer, confidence, grounded, webpage_links
+    return answer, confidence, grounded, webpage_links, image_urls
 
 
 def persist_ask_history(
@@ -246,12 +339,20 @@ def persist_ask_history(
 ) -> None:
     documents_used: list[dict[str, Any]] = []
     chunks_used: list[int] = []
+    images_used: list[int] = []
     webpage_links: list[str] = []
 
     seen_document_ids = set()
     for row in rows:
-        chunk_id = int(row["chunk_id"])
-        chunks_used.append(chunk_id)
+        chunk_id = row.get("chunk_id")
+        if chunk_id is not None:
+            chunks_used.append(int(chunk_id))
+
+        image_id = row.get("image_id")
+        if image_id is not None:
+            image_int = int(image_id)
+            if image_int not in images_used:
+                images_used.append(image_int)
 
         document_id = int(row["document_id"])
         if document_id not in seen_document_ids:
@@ -271,6 +372,7 @@ def persist_ask_history(
 
     evidence = {
         "retrieved_chunk_count": len(chunks_used),
+        "retrieved_image_count": len(images_used),
         "retrieval_outcome": retrieval_outcome,
         "fallback_mode": fallback_mode,
         "answer_provider": settings.answer_provider,
@@ -296,7 +398,7 @@ def persist_ask_history(
               fallback_mode,
               evidence
             )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, '[]'::jsonb, %s, %s, %s, %s, %s, %s);
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
             """,
             (
                 user_id,
@@ -306,6 +408,7 @@ def persist_ask_history(
                 conversation_id,
                 Jsonb(documents_used),
                 Jsonb(chunks_used),
+                Jsonb(images_used),
                 Jsonb(webpage_links),
                 confidence_percent,
                 grounded,

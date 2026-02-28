@@ -1,3 +1,4 @@
+import base64
 import json
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -98,3 +99,40 @@ def generate_text_response(
     if not output_text:
         raise OpenAIClientError("OpenAI returned an empty answer")
     return output_text
+
+
+def generate_image_caption(
+    *,
+    model: str,
+    image_bytes: bytes,
+    mime_type: str,
+    max_chars: int,
+) -> str:
+    b64 = base64.b64encode(image_bytes).decode("ascii")
+    data_url = f"data:{mime_type};base64,{b64}"
+
+    payload = {
+        "model": model,
+        "input": [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_text",
+                        "text": (
+                            "Describe this document image for enterprise retrieval. "
+                            "Include key entities, metrics, labels, and what the image shows. "
+                            f"Maximum {max_chars} characters."
+                        ),
+                    },
+                    {"type": "input_image", "image_url": data_url},
+                ],
+            }
+        ],
+        "max_output_tokens": 500,
+    }
+    response = _post_json("https://api.openai.com/v1/responses", payload)
+    output_text = _extract_response_output_text(response)
+    if not output_text:
+        raise OpenAIClientError("OpenAI returned an empty vision caption")
+    return output_text[:max_chars]

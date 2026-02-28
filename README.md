@@ -65,6 +65,7 @@ docker compose logs -f backend
 - Test PDF ingestion (example):
 ```bash
 curl -X POST "http://localhost:${BACKEND_PORT:-8000}/api/v1/admin/ingest/pdf" \
+  -H "Expect:" \
   -H "x-user-email: your-email@netaxis.be" \
   -H "x-user-name: Your Name" \
   -F "file=@Fusion4Broadworks_Product_Description.pdf"
@@ -124,6 +125,7 @@ All runtime configuration must come from environment variables (never hardcode s
 | `INGEST_CHUNK_SIZE_CHARS` | No | `1200` | `1500` | Character length for text chunking during PDF ingest | No |
 | `INGEST_CHUNK_OVERLAP_CHARS` | No | `180` | `200` | Chunk overlap size during PDF ingest | No |
 | `INGEST_MAX_CHUNKS` | No | `200` | `300` | Safety cap on number of chunks embedded per ingest request | No |
+| `INGEST_MAX_VISION_IMAGES` | No | `0` | `40` | Global cap on how many eligible images are vision-captioned per ingest (`0` = no cap) | No |
 | `ASK_LATENCY_P50_TARGET_MS` | No | `10000` | `10000` | p50 latency target | No |
 | `ASK_LATENCY_P95_TARGET_MS` | No | `25000` | `25000` | p95 latency target | No |
 | `WORKER_POLL_SECONDS` | No | `5` | `10` | Worker heartbeat/poll interval | No |
@@ -143,18 +145,22 @@ Notes:
 - Backend startup schema bootstrap (`users`, `documents`, `text_chunks`, `document_images`, `image_captions`, `ask_history`).
 - First `/api/v1/ask` vertical slice:
   - requires authenticated user identity via frontend proxy,
-  - performs embedding-based retrieval + broadened retry (keyword fallback when needed),
+  - performs multimodal retrieval (text chunks + image captions) with broadened retry (keyword fallback when needed),
   - applies no-retrieval fallback policy,
-  - persists ask history and evidence metadata.
+  - persists ask history and evidence metadata,
+  - returns optional relevant image evidence links.
 - PDF ingestion vertical slice (`/api/v1/admin/ingest/pdf`):
   - stores PDF in object storage,
   - extracts text and chunks it,
-  - creates OpenAI embeddings for chunks,
+  - extracts page images, filters by vision policy, captions eligible images with the configured vision provider, and embeds captions,
+  - creates OpenAI embeddings for text chunks and image captions,
   - stores vectorized chunks in Postgres/pgvector and marks document ready.
 
 ## Provider Behavior (Current)
 - `ANSWER_PROVIDER=openai`: implemented. Backend calls OpenAI Responses API using `ANSWER_MODEL` and `OPENAI_API_KEY`.
 - `ANSWER_PROVIDER=ollama`: placeholder only. Request succeeds with a clear "not implemented yet" message; real Ollama generation is still pending.
+- `VISION_PROVIDER=openai`: implemented for PDF image caption generation during ingest.
+- `VISION_PROVIDER=ollama`: placeholder only (not implemented yet).
 - `EMBEDDINGS_PROVIDER=openai`: implemented for ingestion and retrieval.
 - `EMBEDDINGS_PROVIDER=ollama`: not implemented yet for ingestion/retrieval.
 

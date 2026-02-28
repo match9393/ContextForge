@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     vision_provider: str = "openai"
     embeddings_provider: str = "openai"
     answer_model: str = "gpt-5.2"
+    vision_model: str = "gpt-5.2"
     embeddings_model: str = "text-embedding-3-large"
     openai_api_key: str = ""
     openai_timeout_seconds: int = 60
@@ -31,6 +32,14 @@ class Settings(BaseSettings):
     ingest_chunk_size_chars: int = 1200
     ingest_chunk_overlap_chars: int = 180
     ingest_max_chunks: int = 200
+    image_min_width: int = 320
+    image_min_height: int = 320
+    image_min_area: int = 200000
+    image_min_bytes: int = 15000
+    image_max_aspect_ratio: float = 8.0
+    image_max_per_page: int = 5
+    caption_max_chars: int = 1200
+    ingest_max_vision_images: int = 0
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 

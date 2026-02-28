@@ -36,7 +36,10 @@ CREATE TABLE IF NOT EXISTS document_images (
   id BIGSERIAL PRIMARY KEY,
   document_id BIGINT NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
   page_number INTEGER,
+  image_index INTEGER,
   storage_key TEXT NOT NULL,
+  mime_type TEXT,
+  file_bytes INTEGER,
   width INTEGER,
   height INTEGER,
   created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -74,5 +77,10 @@ CREATE TABLE IF NOT EXISTS ask_history (
 CREATE INDEX IF NOT EXISTS idx_documents_source_type ON documents (source_type);
 CREATE INDEX IF NOT EXISTS idx_documents_source_url ON documents (source_url);
 CREATE INDEX IF NOT EXISTS idx_text_chunks_document_id ON text_chunks (document_id);
+CREATE INDEX IF NOT EXISTS idx_document_images_document_page ON document_images (document_id, page_number);
 CREATE INDEX IF NOT EXISTS idx_ask_history_user_email ON ask_history (user_email);
 CREATE INDEX IF NOT EXISTS idx_ask_history_created_at ON ask_history (created_at DESC);
+
+ALTER TABLE document_images ADD COLUMN IF NOT EXISTS image_index INTEGER;
+ALTER TABLE document_images ADD COLUMN IF NOT EXISTS mime_type TEXT;
+ALTER TABLE document_images ADD COLUMN IF NOT EXISTS file_bytes INTEGER;

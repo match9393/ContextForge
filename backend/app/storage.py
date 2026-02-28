@@ -30,3 +30,12 @@ def upload_bytes(*, bucket_name: str, key: str, data: bytes, content_type: str) 
         Body=data,
         ContentType=content_type,
     )
+
+
+def generate_presigned_get_url(*, bucket_name: str, key: str, expires_seconds: int = 3600) -> str:
+    s3 = get_s3_client()
+    return s3.generate_presigned_url(
+        ClientMethod="get_object",
+        Params={"Bucket": bucket_name, "Key": key},
+        ExpiresIn=expires_seconds,
+    )

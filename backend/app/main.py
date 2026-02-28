@@ -86,7 +86,7 @@ def ask(
                 fallback_mode = "model_knowledge"
 
         try:
-            answer, confidence_percent, grounded, webpage_links = build_answer(
+            answer, confidence_percent, grounded, webpage_links, image_urls = build_answer(
                 question, rows, fallback_mode
             )
         except AnswerProviderError as exc:
@@ -113,11 +113,12 @@ def ask(
         grounded=grounded,
         fallback_mode=fallback_mode,
         webpage_links=webpage_links,
+        image_urls=image_urls,
     )
 
 
 @app.post("/api/v1/admin/ingest/pdf", response_model=IngestPdfResponse)
-async def ingest_pdf(
+def ingest_pdf(
     file: UploadFile = File(...),
     x_user_email: str | None = Header(default=None),
     x_user_name: str | None = Header(default=None),
@@ -131,7 +132,7 @@ async def ingest_pdf(
     if not file.filename or not file.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are supported")
 
-    file_bytes = await file.read()
+    file_bytes = file.file.read()
     if not file_bytes:
         raise HTTPException(status_code=400, detail="Uploaded PDF is empty")
 
