@@ -1148,10 +1148,27 @@ def _question_requests_visual(question: str) -> bool:
     return any(term in q for term in visual_terms)
 
 
+def _prefer_landscape_image(question: str) -> bool:
+    q = question.lower()
+    landscape_terms = (
+        "diagram",
+        "architecture",
+        "flow",
+        "flowchart",
+        "pipeline",
+        "workflow",
+        "topology",
+    )
+    return any(term in q for term in landscape_terms)
+
+
 def _maybe_generate_answer_image(question: str, answer: str, rows: list[dict[str, Any]]) -> list[str]:
     if not settings.generated_images_enabled:
         return []
     if settings.answer_provider.strip().lower() != "openai":
+        return []
+    # Avoid surprising low-quality auto-illustrations: generate only on explicit visual intent.
+    if not _question_requests_visual(question):
         return []
 
     context_text = _context_rows(rows)
@@ -1195,6 +1212,16 @@ def _maybe_generate_answer_image(question: str, answer: str, rows: list[dict[str
             f"{question}"
         )
 
+    style_guardrails = (
+        "Output requirements for generated diagram:\n"
+        "- Keep ALL content fully inside the canvas with safe margins.\n"
+        "- Do not crop any boxes, arrows, or text.\n"
+        "- Use short labels and correct spelling.\n"
+        "- Prefer clear, high-contrast, minimal style.\n"
+        "- Avoid dense tiny text.\n"
+    )
+    image_prompt = f"{style_guardrails}\n\n{image_prompt}"
+
     max_images = max(settings.generated_image_max_per_answer, 0)
     if max_images <= 0:
         return []
@@ -1202,13 +1229,21 @@ def _maybe_generate_answer_image(question: str, answer: str, rows: list[dict[str
     generated_urls: list[str] = []
     ensure_bucket(settings.s3_bucket_assets)
 
+    selected_size = settings.generated_image_size
+    if _prefer_landscape_image(question) and selected_size == "1024x1024":
+        selected_size = "1536x1024"
+
+    selected_quality = settings.generated_image_quality
+    if _question_requests_visual(question) and selected_quality == "medium":
+        selected_quality = "high"
+
     for _ in range(max_images):
         try:
             image_bytes = generate_image_bytes(
                 model=settings.generated_image_model,
                 prompt=image_prompt,
-                size=settings.generated_image_size,
-                quality=settings.generated_image_quality,
+                size=selected_size,
+                quality=selected_quality,
             )
         except OpenAIClientError:
             break

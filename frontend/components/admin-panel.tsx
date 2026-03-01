@@ -88,6 +88,8 @@ type AdminUsersResponse = {
   users: AdminUser[];
 };
 
+type AdminTab = "ingest" | "documents" | "docs_sets" | "history" | "users";
+
 function formatDate(value: string): string {
   const date = new Date(value);
   if (Number.isNaN(date.getTime())) {
@@ -109,6 +111,10 @@ function summarizeSources(item: AdminAskHistory): string {
   return "No source trace stored";
 }
 
+function isDiscoverableLink(link: AdminDiscoveredLink): boolean {
+  return link.same_domain && link.status === "discovered";
+}
+
 export function AdminPanel() {
   const [documents, setDocuments] = useState<AdminDocument[]>([]);
   const [docsSets, setDocsSets] = useState<AdminDocsSet[]>([]);
@@ -120,6 +126,8 @@ export function AdminPanel() {
   const [error, setError] = useState<string | null>(null);
   const [infoMessage, setInfoMessage] = useState<string | null>(null);
 
+  const [activeTab, setActiveTab] = useState<AdminTab>("ingest");
+
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [uploading, setUploading] = useState(false);
 
@@ -128,11 +136,15 @@ export function AdminPanel() {
   const [newDocsSetName, setNewDocsSetName] = useState("");
   const [ingestingWeb, setIngestingWeb] = useState(false);
 
-  const [selectedWebDocumentId, setSelectedWebDocumentId] = useState<number | null>(null);
+  const [linksModalDocumentId, setLinksModalDocumentId] = useState<number | null>(null);
+  const [selectedDiscoveredLinkIds, setSelectedDiscoveredLinkIds] = useState<number[]>([]);
   const [linksLoading, setLinksLoading] = useState(false);
   const [ingestingLinkedBatch, setIngestingLinkedBatch] = useState(false);
   const [ingestingLinkId, setIngestingLinkId] = useState<number | null>(null);
+  const [ingestingSelectedLinks, setIngestingSelectedLinks] = useState(false);
   const [linkedBatchMaxPages, setLinkedBatchMaxPages] = useState(20);
+
+  const [historyFilterEmail, setHistoryFilterEmail] = useState("");
 
   const [deleteCandidate, setDeleteCandidate] = useState<AdminDocument | null>(null);
   const [deleting, setDeleting] = useState(false);
@@ -145,11 +157,47 @@ export function AdminPanel() {
   const [savingRole, setSavingRole] = useState(false);
 
   const selectedWebDocument = useMemo(() => {
-    if (!selectedWebDocumentId) {
+    if (!linksModalDocumentId) {
       return null;
     }
-    return documents.find((document) => document.id === selectedWebDocumentId) || null;
-  }, [documents, selectedWebDocumentId]);
+    return documents.find((document) => document.id === linksModalDocumentId) || null;
+  }, [documents, linksModalDocumentId]);
+
+  const selectedLinksStats = useMemo(() => {
+    const discovered = discoveredLinks.filter((link) => link.status === "discovered").length;
+    const ingested = discoveredLinks.filter((link) => link.status === "ingested").length;
+    const failed = discoveredLinks.filter((link) => link.status === "failed").length;
+    return { discovered, ingested, failed };
+  }, [discoveredLinks]);
+
+  const discoverableLinks = useMemo(
+    () => discoveredLinks.filter((link) => isDiscoverableLink(link)),
+    [discoveredLinks],
+  );
+
+  const selectedDiscoverableLinks = useMemo(
+    () => discoverableLinks.filter((link) => selectedDiscoveredLinkIds.includes(link.id)),
+    [discoverableLinks, selectedDiscoveredLinkIds],
+  );
+
+  const allDiscoverableSelected = useMemo(() => {
+    if (discoverableLinks.length === 0) {
+      return false;
+    }
+    return discoverableLinks.every((link) => selectedDiscoveredLinkIds.includes(link.id));
+  }, [discoverableLinks, selectedDiscoveredLinkIds]);
+
+  const historyUsers = useMemo(
+    () => Array.from(new Set(history.map((item) => item.user_email))).sort((a, b) => a.localeCompare(b)),
+    [history],
+  );
+
+  const filteredHistory = useMemo(() => {
+    if (!historyFilterEmail) {
+      return history;
+    }
+    return history.filter((item) => item.user_email === historyFilterEmail);
+  }, [history, historyFilterEmail]);
 
   async function loadDocuments() {
     const response = await fetch("/api/admin/documents?limit=200", { cache: "no-store" });
@@ -170,7 +218,7 @@ export function AdminPanel() {
   }
 
   async function loadHistory() {
-    const response = await fetch("/api/admin/ask-history?limit=40", { cache: "no-store" });
+    const response = await fetch("/api/admin/ask-history?limit=200", { cache: "no-store" });
     const data = (await response.json()) as AdminAskHistoryResponse & { error?: string; detail?: string };
     if (!response.ok) {
       throw new Error(data.error || data.detail || "Failed to load ask history.");
@@ -226,14 +274,15 @@ export function AdminPanel() {
   }, []);
 
   useEffect(() => {
-    if (!selectedWebDocumentId) {
+    if (!linksModalDocumentId) {
       setDiscoveredLinks([]);
+      setSelectedDiscoveredLinkIds([]);
       return;
     }
-    void loadDiscoveredLinks(selectedWebDocumentId).catch((loadError) => {
+    void loadDiscoveredLinks(linksModalDocumentId).catch((loadError) => {
       setError(loadError instanceof Error ? loadError.message : "Failed to load discovered links.");
     });
-  }, [selectedWebDocumentId]);
+  }, [linksModalDocumentId]);
 
   async function onUploadPdf(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -319,30 +368,34 @@ export function AdminPanel() {
     }
   }
 
-  async function onIngestSingleLink(link: AdminDiscoveredLink) {
-    if (!selectedWebDocument) {
-      return;
-    }
+  async function ingestDiscoveredLink(sourceDocument: AdminDocument, link: AdminDiscoveredLink) {
+    const response = await fetch("/api/admin/webpages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        url: link.normalized_url,
+        docs_set_id: sourceDocument.docs_set_id,
+        parent_document_id: sourceDocument.id,
+        discovered_link_id: link.id,
+      }),
+    });
+    return (await response.json()) as { error?: string; detail?: string; document_id?: number } & {
+      status?: string;
+    } & { ok?: boolean };
+  }
+
+  async function onIngestSingleLink(sourceDocument: AdminDocument, link: AdminDiscoveredLink) {
     setInfoMessage(null);
     setIngestingLinkId(link.id);
     try {
-      const response = await fetch("/api/admin/webpages", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          url: link.normalized_url,
-          docs_set_id: selectedWebDocument.docs_set_id,
-          parent_document_id: selectedWebDocument.id,
-          discovered_link_id: link.id,
-        }),
-      });
-      const data = (await response.json()) as { error?: string; detail?: string; document_id?: number };
-      if (!response.ok) {
+      const data = await ingestDiscoveredLink(sourceDocument, link);
+      if (data.error || data.detail) {
         setInfoMessage(data.error || data.detail || "Linked-page ingestion failed.");
         return;
       }
       setInfoMessage(`Linked-page ingest completed (document #${data.document_id ?? "?"}).`);
-      await Promise.all([loadDocuments(), loadDocsSets(), loadDiscoveredLinks(selectedWebDocument.id)]);
+      await Promise.all([loadDocuments(), loadDocsSets(), loadDiscoveredLinks(sourceDocument.id)]);
+      setSelectedDiscoveredLinkIds((current) => current.filter((id) => id !== link.id));
     } catch {
       setInfoMessage("Linked-page ingestion failed due to network error.");
     } finally {
@@ -382,10 +435,48 @@ export function AdminPanel() {
         `Batch ingest done: attempted=${data.attempted ?? 0}, ingested=${data.ingested ?? 0}, skipped=${data.skipped ?? 0}, failed=${data.failed ?? 0}.`,
       );
       await Promise.all([loadDocuments(), loadDocsSets(), loadDiscoveredLinks(selectedWebDocument.id)]);
+      setSelectedDiscoveredLinkIds([]);
     } catch {
       setInfoMessage("Batch linked-page ingestion failed due to network error.");
     } finally {
       setIngestingLinkedBatch(false);
+    }
+  }
+
+  async function onIngestSelectedLinks() {
+    if (!selectedWebDocument) {
+      return;
+    }
+    const linksToIngest = selectedDiscoverableLinks;
+    if (linksToIngest.length === 0) {
+      setInfoMessage("Select at least one discovered same-domain link.");
+      return;
+    }
+
+    setIngestingSelectedLinks(true);
+    setInfoMessage(null);
+    let ingested = 0;
+    let failed = 0;
+
+    try {
+      for (const link of linksToIngest) {
+        try {
+          const data = await ingestDiscoveredLink(selectedWebDocument, link);
+          if (data.error || data.detail) {
+            failed += 1;
+            continue;
+          }
+          ingested += 1;
+        } catch {
+          failed += 1;
+        }
+      }
+
+      setInfoMessage(`Selected links ingest done: ingested=${ingested}, failed=${failed}.`);
+      await Promise.all([loadDocuments(), loadDocsSets(), loadDiscoveredLinks(selectedWebDocument.id)]);
+      setSelectedDiscoveredLinkIds([]);
+    } finally {
+      setIngestingSelectedLinks(false);
     }
   }
 
@@ -407,10 +498,11 @@ export function AdminPanel() {
       setInfoMessage(
         `Re-ingest completed: old document #${data.old_document_id ?? document.id}, new document #${data.new_document_id ?? "?"}.`,
       );
-      if (selectedWebDocumentId === document.id) {
-        setSelectedWebDocumentId(data.new_document_id ?? null);
-      }
+
       await Promise.all([loadDocuments(), loadDocsSets(), loadHistory()]);
+      if (linksModalDocumentId === document.id) {
+        setLinksModalDocumentId(data.new_document_id ?? null);
+      }
     } catch {
       setInfoMessage("Re-ingest failed due to network error.");
     } finally {
@@ -435,8 +527,8 @@ export function AdminPanel() {
 
       setDeleteCandidate(null);
       await Promise.all([loadDocuments(), loadDocsSets()]);
-      if (selectedWebDocumentId === deleteCandidate.id) {
-        setSelectedWebDocumentId(null);
+      if (linksModalDocumentId === deleteCandidate.id) {
+        setLinksModalDocumentId(null);
       }
     } catch {
       setInfoMessage("Delete failed due to network error.");
@@ -469,7 +561,7 @@ export function AdminPanel() {
       );
       setDeleteDocsSetCandidate(null);
       setSelectedDocsSetId("");
-      setSelectedWebDocumentId(null);
+      setLinksModalDocumentId(null);
       await Promise.all([loadDocuments(), loadDocsSets(), loadHistory()]);
     } catch {
       setInfoMessage("Docs set delete failed due to network error.");
@@ -509,12 +601,27 @@ export function AdminPanel() {
     }
   }
 
-  const selectedLinksStats = useMemo(() => {
-    const discovered = discoveredLinks.filter((link) => link.status === "discovered").length;
-    const ingested = discoveredLinks.filter((link) => link.status === "ingested").length;
-    const failed = discoveredLinks.filter((link) => link.status === "failed").length;
-    return { discovered, ingested, failed };
-  }, [discoveredLinks]);
+  function openLinksModal(documentId: number) {
+    setLinksModalDocumentId(documentId);
+    setSelectedDiscoveredLinkIds([]);
+  }
+
+  function toggleDiscoveredLinkSelection(linkId: number) {
+    setSelectedDiscoveredLinkIds((current) => {
+      if (current.includes(linkId)) {
+        return current.filter((id) => id !== linkId);
+      }
+      return [...current, linkId];
+    });
+  }
+
+  function toggleSelectAllDiscoverable() {
+    if (allDiscoverableSelected) {
+      setSelectedDiscoveredLinkIds([]);
+      return;
+    }
+    setSelectedDiscoveredLinkIds(discoverableLinks.map((link) => link.id));
+  }
 
   return (
     <section className="admin-shell">
@@ -525,242 +632,166 @@ export function AdminPanel() {
         </button>
       </div>
 
-      <section className="admin-card">
-        <h3>PDF Upload</h3>
-        <form className="admin-upload-form" onSubmit={onUploadPdf}>
-          <input
-            type="file"
-            accept="application/pdf"
-            onChange={(event) => setUploadFile(event.target.files?.[0] || null)}
-          />
-          <button type="submit" disabled={uploading}>
-            {uploading ? "Uploading..." : "Ingest PDF"}
-          </button>
-        </form>
-      </section>
-
-      <section className="admin-card">
-        <h3>Webpage Ingestion</h3>
-        <form className="admin-upload-form" onSubmit={onIngestWebpage}>
-          <input
-            type="url"
-            className="admin-url-input"
-            placeholder="https://example.com/docs/start"
-            value={webUrl}
-            onChange={(event) => setWebUrl(event.target.value)}
-          />
-          <select
-            className="admin-select"
-            value={selectedDocsSetId}
-            onChange={(event) => setSelectedDocsSetId(event.target.value)}
+      <div className="admin-tabs" role="tablist" aria-label="Admin sections">
+        <button
+          type="button"
+          className={`admin-tab ${activeTab === "ingest" ? "active" : ""}`}
+          onClick={() => setActiveTab("ingest")}
+        >
+          Ingest
+        </button>
+        <button
+          type="button"
+          className={`admin-tab ${activeTab === "documents" ? "active" : ""}`}
+          onClick={() => setActiveTab("documents")}
+        >
+          Documents
+        </button>
+        <button
+          type="button"
+          className={`admin-tab ${activeTab === "docs_sets" ? "active" : ""}`}
+          onClick={() => setActiveTab("docs_sets")}
+        >
+          Documentation Sets
+        </button>
+        <button
+          type="button"
+          className={`admin-tab ${activeTab === "history" ? "active" : ""}`}
+          onClick={() => setActiveTab("history")}
+        >
+          Ask History
+        </button>
+        {canManageUsers ? (
+          <button
+            type="button"
+            className={`admin-tab ${activeTab === "users" ? "active" : ""}`}
+            onClick={() => setActiveTab("users")}
           >
-            <option value="">Create new docs set</option>
-            {docsSets.map((setItem) => (
-              <option key={setItem.id} value={String(setItem.id)}>
-                #{setItem.id} {setItem.name}
-              </option>
-            ))}
-          </select>
-          <button type="submit" disabled={ingestingWeb}>
-            {ingestingWeb ? "Ingesting..." : "Ingest Webpage"}
+            Users & Roles
           </button>
-        </form>
-        {!selectedDocsSetId ? (
-          <input
-            type="text"
-            className="admin-url-input"
-            placeholder="New docs set name (optional)"
-            value={newDocsSetName}
-            onChange={(event) => setNewDocsSetName(event.target.value)}
-          />
         ) : null}
-        <p className="meta">
-          Ingests exactly the URL you submit, extracts text/tables/images, and stores discovered links for controlled
-          follow-up ingestion.
-        </p>
-      </section>
-
-      <section className="admin-card">
-        <h3>Documentation Sets</h3>
-        {docsSets.length === 0 ? (
-          <p className="meta">No documentation sets yet.</p>
-        ) : (
-          <div className="table-wrap">
-            <table className="admin-table">
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Name</th>
-                  <th>Root URL</th>
-                  <th>Documents</th>
-                  <th>Created</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {docsSets.map((setItem) => (
-                  <tr key={setItem.id}>
-                    <td>{setItem.id}</td>
-                    <td>{setItem.name}</td>
-                    <td>{setItem.root_url || "-"}</td>
-                    <td>{setItem.document_count}</td>
-                    <td>{formatDate(setItem.created_at)}</td>
-                    <td className="admin-actions">
-                      <button
-                        type="button"
-                        className="button danger"
-                        onClick={() => setDeleteDocsSetCandidate(setItem)}
-                        disabled={deletingDocsSet || deleting}
-                      >
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+      </div>
 
       {infoMessage ? <p className="meta">{infoMessage}</p> : null}
       {error ? <p className="error">{error}</p> : null}
 
-      <section className="admin-card">
-        <h3>Documents</h3>
-        {documents.length === 0 ? (
-          <p className="meta">No documents indexed yet.</p>
-        ) : (
-          <div className="table-wrap">
-            <table className="admin-table">
-              <thead>
-                <tr>
-                  <th>ID</th>
-                  <th>Type</th>
-                  <th>Name</th>
-                  <th>Docs Set</th>
-                  <th>Status</th>
-                  <th>Chunks</th>
-                  <th>Images</th>
-                  <th>Created</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {documents.map((document) => (
-                  <tr key={document.id}>
-                    <td>{document.id}</td>
-                    <td>{document.source_type}</td>
-                    <td>{document.source_name}</td>
-                    <td>{document.docs_set_name || "-"}</td>
-                    <td>{document.status}</td>
-                    <td>{document.text_chunk_count}</td>
-                    <td>{document.image_count}</td>
-                    <td>{formatDate(document.created_at)}</td>
-                    <td className="admin-actions">
-                      {document.source_type === "web" ? (
-                        <button
-                          type="button"
-                          className="button secondary"
-                          onClick={() => setSelectedWebDocumentId(document.id)}
-                          disabled={deleting}
-                        >
-                          Links
-                        </button>
-                      ) : null}
-                      <button
-                        type="button"
-                        className="button secondary"
-                        onClick={() => void onReingestDocument(document)}
-                        disabled={deleting || reingestingDocumentId !== null}
-                      >
-                        {reingestingDocumentId === document.id ? "Re-ingesting..." : "Re-ingest"}
-                      </button>
-                      <button
-                        type="button"
-                        className="button danger"
-                        onClick={() => setDeleteCandidate(document)}
-                        disabled={deleting || reingestingDocumentId !== null}
-                      >
-                        Delete
-                      </button>
-                    </td>
-                  </tr>
+      {activeTab === "ingest" ? (
+        <>
+          <section className="admin-card">
+            <h3>PDF Upload</h3>
+            <form className="admin-upload-form" onSubmit={onUploadPdf}>
+              <input
+                type="file"
+                accept="application/pdf"
+                onChange={(event) => setUploadFile(event.target.files?.[0] || null)}
+              />
+              <button type="submit" disabled={uploading}>
+                {uploading ? "Uploading..." : "Ingest PDF"}
+              </button>
+            </form>
+          </section>
+
+          <section className="admin-card">
+            <h3>Webpage Ingestion</h3>
+            <form className="admin-upload-form" onSubmit={onIngestWebpage}>
+              <input
+                type="url"
+                className="admin-url-input"
+                placeholder="https://example.com/docs/start"
+                value={webUrl}
+                onChange={(event) => setWebUrl(event.target.value)}
+              />
+              <select
+                className="admin-select"
+                value={selectedDocsSetId}
+                onChange={(event) => setSelectedDocsSetId(event.target.value)}
+              >
+                <option value="">Create new docs set</option>
+                {docsSets.map((setItem) => (
+                  <option key={setItem.id} value={String(setItem.id)}>
+                    #{setItem.id} {setItem.name}
+                  </option>
                 ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+              </select>
+              <button type="submit" disabled={ingestingWeb}>
+                {ingestingWeb ? "Ingesting..." : "Ingest Webpage"}
+              </button>
+            </form>
+            {!selectedDocsSetId ? (
+              <input
+                type="text"
+                className="admin-url-input"
+                placeholder="New docs set name (optional)"
+                value={newDocsSetName}
+                onChange={(event) => setNewDocsSetName(event.target.value)}
+              />
+            ) : null}
+            <p className="meta">
+              Ingests exactly the URL you submit, extracts text/tables/images, and stores discovered links for controlled
+              follow-up ingestion.
+            </p>
+          </section>
+        </>
+      ) : null}
 
-      {selectedWebDocument ? (
+      {activeTab === "documents" ? (
         <section className="admin-card">
-          <h3>
-            Discovered Links for Web Document #{selectedWebDocument.id} ({selectedWebDocument.source_name})
-          </h3>
-          <p className="meta">
-            discovered={selectedLinksStats.discovered} | ingested={selectedLinksStats.ingested} | failed=
-            {selectedLinksStats.failed}
-          </p>
-          <div className="admin-upload-form">
-            <label htmlFor="linked-max-pages">Batch max pages</label>
-            <input
-              id="linked-max-pages"
-              type="number"
-              className="admin-number-input"
-              min={1}
-              max={100}
-              value={linkedBatchMaxPages}
-              onChange={(event) => {
-                const next = Number(event.target.value);
-                if (!Number.isFinite(next)) {
-                  return;
-                }
-                setLinkedBatchMaxPages(Math.min(Math.max(Math.floor(next), 1), 100));
-              }}
-            />
-            <button type="button" onClick={() => void onIngestLinkedBatch()} disabled={ingestingLinkedBatch || linksLoading}>
-              {ingestingLinkedBatch ? "Ingesting..." : "Ingest Discovered Links (Same Domain)"}
-            </button>
-          </div>
-
-          {linksLoading ? (
-            <p className="meta">Loading discovered links...</p>
-          ) : discoveredLinks.length === 0 ? (
-            <p className="meta">No links discovered for this page yet.</p>
+          <h3>Documents</h3>
+          {documents.length === 0 ? (
+            <p className="meta">No documents indexed yet.</p>
           ) : (
             <div className="table-wrap">
               <table className="admin-table">
                 <thead>
                   <tr>
                     <th>ID</th>
+                    <th>Type</th>
+                    <th>Name</th>
+                    <th>Docs Set</th>
                     <th>Status</th>
-                    <th>Same Domain</th>
-                    <th>URL</th>
-                    <th>Ingested Doc</th>
+                    <th>Chunks</th>
+                    <th>Images</th>
+                    <th>Created</th>
                     <th />
                   </tr>
                 </thead>
                 <tbody>
-                  {discoveredLinks.map((link) => (
-                    <tr key={link.id}>
-                      <td>{link.id}</td>
-                      <td>{link.status}</td>
-                      <td>{link.same_domain ? "yes" : "no"}</td>
-                      <td>{link.normalized_url}</td>
-                      <td>{link.ingested_document_id || "-"}</td>
-                      <td>
+                  {documents.map((document) => (
+                    <tr key={document.id}>
+                      <td>{document.id}</td>
+                      <td>{document.source_type}</td>
+                      <td>{document.source_name}</td>
+                      <td>{document.docs_set_name || "-"}</td>
+                      <td>{document.status}</td>
+                      <td>{document.text_chunk_count}</td>
+                      <td>{document.image_count}</td>
+                      <td>{formatDate(document.created_at)}</td>
+                      <td className="admin-actions">
+                        {document.source_type === "web" ? (
+                          <button
+                            type="button"
+                            className="button secondary"
+                            onClick={() => openLinksModal(document.id)}
+                            disabled={deleting || reingestingDocumentId !== null}
+                          >
+                            Links
+                          </button>
+                        ) : null}
                         <button
                           type="button"
                           className="button secondary"
-                          onClick={() => void onIngestSingleLink(link)}
-                          disabled={
-                            ingestingLinkId !== null ||
-                            link.status === "ingested" ||
-                            !link.same_domain
-                          }
+                          onClick={() => void onReingestDocument(document)}
+                          disabled={deleting || reingestingDocumentId !== null}
                         >
-                          {ingestingLinkId === link.id ? "Ingesting..." : "Ingest"}
+                          {reingestingDocumentId === document.id ? "Re-ingesting..." : "Re-ingest"}
+                        </button>
+                        <button
+                          type="button"
+                          className="button danger"
+                          onClick={() => setDeleteCandidate(document)}
+                          disabled={deleting || reingestingDocumentId !== null}
+                        >
+                          Delete
                         </button>
                       </td>
                     </tr>
@@ -772,47 +803,114 @@ export function AdminPanel() {
         </section>
       ) : null}
 
-      <section className="admin-card">
-        <h3>Ask History</h3>
-        {history.length === 0 ? (
-          <p className="meta">No questions logged yet.</p>
-        ) : (
-          <div className="table-wrap">
-            <table className="admin-table">
-              <thead>
-                <tr>
-                  <th>Time</th>
-                  <th>User</th>
-                  <th>Question</th>
-                  <th>Retrieval</th>
-                  <th>Confidence</th>
-                  <th>Chunks</th>
-                  <th>Images</th>
-                  <th>Source Trace</th>
-                </tr>
-              </thead>
-              <tbody>
-                {history.map((item) => (
-                  <tr key={item.id}>
-                    <td>{formatDate(item.created_at)}</td>
-                    <td>{item.user_email}</td>
-                    <td>{item.question}</td>
-                    <td>
-                      {item.retrieval_outcome} / {item.fallback_mode}
-                    </td>
-                    <td>{item.confidence_percent}%</td>
-                    <td>{item.chunks_used.length}</td>
-                    <td>{item.images_used.length}</td>
-                    <td>{summarizeSources(item)}</td>
+      {activeTab === "docs_sets" ? (
+        <section className="admin-card">
+          <h3>Documentation Sets</h3>
+          {docsSets.length === 0 ? (
+            <p className="meta">No documentation sets yet.</p>
+          ) : (
+            <div className="table-wrap">
+              <table className="admin-table">
+                <thead>
+                  <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Root URL</th>
+                    <th>Documents</th>
+                    <th>Created</th>
+                    <th />
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </section>
+                </thead>
+                <tbody>
+                  {docsSets.map((setItem) => (
+                    <tr key={setItem.id}>
+                      <td>{setItem.id}</td>
+                      <td>{setItem.name}</td>
+                      <td>{setItem.root_url || "-"}</td>
+                      <td>{setItem.document_count}</td>
+                      <td>{formatDate(setItem.created_at)}</td>
+                      <td className="admin-actions">
+                        <button
+                          type="button"
+                          className="button danger"
+                          onClick={() => setDeleteDocsSetCandidate(setItem)}
+                          disabled={deletingDocsSet || deleting}
+                        >
+                          Delete
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      ) : null}
 
-      {canManageUsers ? (
+      {activeTab === "history" ? (
+        <section className="admin-card">
+          <div className="admin-head admin-subhead">
+            <h3>Ask History</h3>
+            <div className="admin-filter-row">
+              <label htmlFor="ask-history-user" className="meta">
+                User
+              </label>
+              <select
+                id="ask-history-user"
+                className="admin-select"
+                value={historyFilterEmail}
+                onChange={(event) => setHistoryFilterEmail(event.target.value)}
+              >
+                <option value="">All users</option>
+                {historyUsers.map((email) => (
+                  <option key={email} value={email}>
+                    {email}
+                  </option>
+                ))}
+              </select>
+            </div>
+          </div>
+          {filteredHistory.length === 0 ? (
+            <p className="meta">No questions logged for current filter.</p>
+          ) : (
+            <div className="table-wrap">
+              <table className="admin-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>User</th>
+                    <th>Question</th>
+                    <th>Retrieval</th>
+                    <th>Confidence</th>
+                    <th>Chunks</th>
+                    <th>Images</th>
+                    <th>Source Trace</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filteredHistory.map((item) => (
+                    <tr key={item.id}>
+                      <td>{formatDate(item.created_at)}</td>
+                      <td>{item.user_email}</td>
+                      <td>{item.question}</td>
+                      <td>
+                        {item.retrieval_outcome} / {item.fallback_mode}
+                      </td>
+                      <td>{item.confidence_percent}%</td>
+                      <td>{item.chunks_used.length}</td>
+                      <td>{item.images_used.length}</td>
+                      <td>{summarizeSources(item)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </section>
+      ) : null}
+
+      {activeTab === "users" && canManageUsers ? (
         <section className="admin-card">
           <h3>Users & Roles (Super-admin)</h3>
           <form className="admin-upload-form" onSubmit={onSetUserRole}>
@@ -864,6 +962,139 @@ export function AdminPanel() {
         </section>
       ) : null}
 
+      {selectedWebDocument ? (
+        <div className="modal-backdrop" role="dialog" aria-modal="true">
+          <div className="modal-card modal-card-wide">
+            <div className="admin-head admin-subhead">
+              <h3>
+                Discovered Links: #{selectedWebDocument.id} ({selectedWebDocument.source_name})
+              </h3>
+              <button type="button" className="button secondary" onClick={() => setLinksModalDocumentId(null)}>
+                Close
+              </button>
+            </div>
+            <p className="meta">
+              discovered={selectedLinksStats.discovered} | ingested={selectedLinksStats.ingested} | failed=
+              {selectedLinksStats.failed}
+            </p>
+
+            <div className="admin-modal-controls">
+              <label className="admin-checkbox-row">
+                <input
+                  type="checkbox"
+                  checked={allDiscoverableSelected}
+                  onChange={toggleSelectAllDiscoverable}
+                  disabled={discoverableLinks.length === 0 || ingestingSelectedLinks || ingestingLinkedBatch}
+                />
+                Select all discovered same-domain links
+              </label>
+
+              <label htmlFor="linked-max-pages" className="admin-inline-field">
+                <span>Batch max pages</span>
+                <input
+                  id="linked-max-pages"
+                  type="number"
+                  className="admin-number-input"
+                  min={1}
+                  max={100}
+                  value={linkedBatchMaxPages}
+                  onChange={(event) => {
+                    const next = Number(event.target.value);
+                    if (!Number.isFinite(next)) {
+                      return;
+                    }
+                    setLinkedBatchMaxPages(Math.min(Math.max(Math.floor(next), 1), 100));
+                  }}
+                />
+              </label>
+
+              <button
+                type="button"
+                onClick={() => void onIngestSelectedLinks()}
+                disabled={
+                  ingestingSelectedLinks ||
+                  ingestingLinkedBatch ||
+                  ingestingLinkId !== null ||
+                  selectedDiscoverableLinks.length === 0
+                }
+              >
+                {ingestingSelectedLinks
+                  ? "Ingesting selected..."
+                  : `Ingest selected (${selectedDiscoverableLinks.length})`}
+              </button>
+
+              <button
+                type="button"
+                onClick={() => void onIngestLinkedBatch()}
+                disabled={ingestingLinkedBatch || ingestingSelectedLinks || linksLoading}
+              >
+                {ingestingLinkedBatch ? "Ingesting..." : "Ingest discovered (same domain)"}
+              </button>
+            </div>
+
+            {linksLoading ? (
+              <p className="meta">Loading discovered links...</p>
+            ) : discoveredLinks.length === 0 ? (
+              <p className="meta">No links discovered for this page yet.</p>
+            ) : (
+              <div className="table-wrap modal-table-wrap">
+                <table className="admin-table">
+                  <thead>
+                    <tr>
+                      <th />
+                      <th>ID</th>
+                      <th>Status</th>
+                      <th>Same Domain</th>
+                      <th>URL</th>
+                      <th>Ingested Doc</th>
+                      <th />
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {discoveredLinks.map((link) => {
+                      const selectable = isDiscoverableLink(link);
+                      const selected = selectedDiscoveredLinkIds.includes(link.id);
+                      return (
+                        <tr key={link.id}>
+                          <td>
+                            <input
+                              type="checkbox"
+                              checked={selected}
+                              onChange={() => toggleDiscoveredLinkSelection(link.id)}
+                              disabled={!selectable || ingestingSelectedLinks || ingestingLinkedBatch}
+                            />
+                          </td>
+                          <td>{link.id}</td>
+                          <td>{link.status}</td>
+                          <td>{link.same_domain ? "yes" : "no"}</td>
+                          <td>{link.normalized_url}</td>
+                          <td>{link.ingested_document_id || "-"}</td>
+                          <td>
+                            <button
+                              type="button"
+                              className="button secondary"
+                              onClick={() => void onIngestSingleLink(selectedWebDocument, link)}
+                              disabled={
+                                ingestingLinkId !== null ||
+                                ingestingSelectedLinks ||
+                                ingestingLinkedBatch ||
+                                !selectable
+                              }
+                            >
+                              {ingestingLinkId === link.id ? "Ingesting..." : "Ingest"}
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      ) : null}
+
       {deleteCandidate ? (
         <div className="modal-backdrop" role="dialog" aria-modal="true">
           <div className="modal-card">
@@ -894,8 +1125,8 @@ export function AdminPanel() {
           <div className="modal-card">
             <h3>Delete docs set?</h3>
             <p>
-              This will immediately remove docs set <strong>{deleteDocsSetCandidate.name}</strong> and all webpages
-              in this set, including chunks, embeddings, images, and discovered links.
+              This will immediately remove docs set <strong>{deleteDocsSetCandidate.name}</strong> and all webpages in
+              this set, including chunks, embeddings, images, and discovered links.
             </p>
             <div className="modal-actions">
               <button

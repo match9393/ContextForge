@@ -32,7 +32,7 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_timeout_seconds: int = 60
     generated_images_enabled: bool = True
-    generated_image_model: str = "gpt-image-1"
+    generated_image_model: str = "gpt-image-1.5"
     generated_image_size: str = "1024x1024"
     generated_image_quality: str = "medium"
     generated_image_max_per_answer: int = 1

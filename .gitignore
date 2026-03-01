@@ -25,3 +25,9 @@ build/
 # Coverage
 coverage/
 .coverage
+
+# Local product/docs notes
+AGENTS.md
+architektura_techniczna.md
+definicja_produktu.md
+ui.md

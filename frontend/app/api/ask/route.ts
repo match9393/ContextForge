@@ -5,6 +5,7 @@ import { authOptions } from "@/lib/auth";
 
 type AskRequest = {
   question: string;
+  conversation_id?: string;
 };
 
 const backendUrl = process.env.BACKEND_INTERNAL_URL || "http://backend:8000";
@@ -33,12 +34,15 @@ export async function POST(request: Request) {
     return NextResponse.json({ error: "Question is required" }, { status: 400 });
   }
 
+  const conversationId = typeof payload.conversation_id === "string" ? payload.conversation_id.trim() : "";
+
   const response = await fetch(`${backendUrl}/api/v1/ask`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       "X-User-Email": session.user.email,
       "X-User-Name": session.user.name || "",
+      ...(conversationId ? { "X-Conversation-Id": conversationId } : {}),
     },
     body: JSON.stringify({ question: payload.question.trim() }),
     cache: "no-store",

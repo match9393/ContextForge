@@ -21,22 +21,22 @@ export default async function HomePage() {
   }
 
   return (
-    <main className="page">
-      <section className="card">
-        <div className="top-row">
-          <div>
-            <h1>ContextForge</h1>
-            <p>Signed in as {session.user.email}</p>
-          </div>
-          <div className="top-row-actions">
-            <a className="button secondary" href="/admin">
-              Admin
-            </a>
-            <a className="button secondary" href="/api/auth/signout">
-              Sign out
-            </a>
-          </div>
+    <main className="app-shell">
+      <header className="app-header">
+        <div className="app-brand">
+          <h1>ContextForge</h1>
+          <p>Signed in as {session.user.email}</p>
         </div>
+        <div className="top-row-actions">
+          <a className="button secondary app-header-button" href="/admin">
+            Admin
+          </a>
+          <a className="button secondary app-header-button" href="/api/auth/signout">
+            Sign out
+          </a>
+        </div>
+      </header>
+      <section className="app-chat-surface">
         <AskPanel />
       </section>
     </main>
