@@ -136,6 +136,14 @@ def tokenize(question: str, broaden: bool) -> list[str]:
     return tokens[:max_tokens]
 
 
+def _is_navigation_noise_text(text: str) -> bool:
+    normalized = " ".join(text.split()).lower()
+    if not normalized:
+        return False
+    matches = sum(1 for phrase in NAV_NOISE_PHRASES if phrase in normalized)
+    return matches >= 2
+
+
 def _infer_question_type(question: str) -> str:
     q = question.lower()
     if any(term in q for term in PROCEDURAL_HINT_TERMS):
@@ -336,15 +344,8 @@ def _merge_retrieval_rows(
     seen_keys: set[str] = set()
     source_counts: dict[tuple[str, str, str], int] = {}
 
-    def is_nav_noise(row: dict[str, Any]) -> bool:
-        text = " ".join(str(row.get("chunk_text", "")).split()).lower()
-        if not text:
-            return False
-        matches = sum(1 for phrase in NAV_NOISE_PHRASES if phrase in text)
-        return matches >= 2
-
     for row in combined:
-        if is_nav_noise(row):
+        if _is_navigation_noise_text(str(row.get("chunk_text", ""))):
             continue
 
         row_key = _row_dedupe_key(row)
@@ -366,7 +367,7 @@ def _merge_retrieval_rows(
     # Prefer lexical matches first to capture concrete lists/labels.
     supplemental = list(keyword_rows) + list(embedding_rows)
     for row in supplemental:
-        if is_nav_noise(row):
+        if _is_navigation_noise_text(str(row.get("chunk_text", ""))):
             continue
         row_key = _row_dedupe_key(row)
         if row_key in seen_keys:
@@ -692,6 +693,158 @@ def retrieve_chunks_with_planner(conn, question: str, *, broaden: bool = False) 
     return combined, retrieval_trace
 
 
+def _extract_question_urls(question: str) -> set[str]:
+    urls = set(re.findall(r"https?://[^\s)>\"]+", question, flags=re.IGNORECASE))
+    return {url.strip().rstrip(".,;:").lower() for url in urls if url.strip()}
+
+
+def _doc_full_text_for_answer(conn, *, document_id: int, max_chars: int) -> tuple[str, int, bool]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT chunk_type, text
+            FROM text_chunks
+            WHERE document_id = %s
+            ORDER BY id ASC;
+            """,
+            (document_id,),
+        )
+        chunk_rows = cur.fetchall()
+
+    parts: list[str] = []
+    for row in chunk_rows:
+        chunk_text = " ".join(str(row.get("text") or "").split()).strip()
+        if not chunk_text:
+            continue
+        if _is_navigation_noise_text(chunk_text):
+            continue
+        chunk_type = str(row.get("chunk_type") or "text")
+        if chunk_type == "text":
+            parts.append(chunk_text)
+        else:
+            parts.append(f"[{chunk_type}] {chunk_text}")
+
+    merged = "\n".join(parts).strip()
+    if not merged:
+        return "", 0, False
+
+    max_allowed = max(max_chars, 4000)
+    if len(merged) <= max_allowed:
+        return merged, len(parts), False
+
+    head = max_allowed // 2
+    tail = max_allowed - head
+    truncated = (
+        merged[:head]
+        + "\n...[document middle truncated for token budget]...\n"
+        + merged[-tail:]
+    )
+    return truncated, len(parts), True
+
+
+def _select_documents_for_full_context(question: str, rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    if not rows or limit <= 0:
+        return []
+
+    explicit_urls = _extract_question_urls(question)
+    doc_best: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        doc_id_raw = row.get("document_id")
+        if doc_id_raw is None:
+            continue
+        doc_id = int(doc_id_raw)
+        score = float(row.get("retrieval_score") or row.get("similarity") or 0.0)
+        entry = doc_best.get(doc_id)
+        if entry is None or score > float(entry.get("score", -10_000.0)):
+            doc_best[doc_id] = {
+                "document_id": doc_id,
+                "source_name": row.get("source_name"),
+                "source_type": row.get("source_type"),
+                "source_url": row.get("source_url"),
+                "score": score,
+            }
+
+    docs = list(doc_best.values())
+    for doc in docs:
+        source_url = str(doc.get("source_url") or "").strip().lower()
+        doc["direct_url_match"] = 1 if source_url and source_url in explicit_urls else 0
+
+    docs.sort(
+        key=lambda item: (
+            int(item.get("direct_url_match") or 0),
+            float(item.get("score") or 0.0),
+        ),
+        reverse=True,
+    )
+    return docs[:limit]
+
+
+def build_answer_context_rows(
+    conn,
+    *,
+    question: str,
+    rows: list[dict[str, Any]],
+    use_full_doc_context: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not rows:
+        return rows, {"enabled": False, "selected_documents": []}
+    if not use_full_doc_context or not settings.retrieval_full_doc_context_enabled:
+        return rows, {"enabled": False, "selected_documents": []}
+
+    selected_docs = _select_documents_for_full_context(
+        question,
+        rows,
+        limit=max(settings.retrieval_full_doc_context_top_docs, 1),
+    )
+    if not selected_docs:
+        return rows, {"enabled": False, "selected_documents": []}
+
+    synthetic_rows: list[dict[str, Any]] = []
+    trace_docs: list[dict[str, Any]] = []
+    for doc in selected_docs:
+        document_id = int(doc["document_id"])
+        full_text, full_chunk_count, truncated = _doc_full_text_for_answer(
+            conn,
+            document_id=document_id,
+            max_chars=settings.retrieval_full_doc_context_max_chars_per_doc,
+        )
+        if not full_text:
+            continue
+
+        synthetic_rows.append(
+            {
+                "chunk_id": None,
+                "chunk_text": full_text,
+                "chunk_type": "document_full",
+                "document_id": document_id,
+                "source_name": doc.get("source_name"),
+                "source_type": doc.get("source_type"),
+                "source_url": doc.get("source_url"),
+                "image_id": None,
+                "image_storage_key": None,
+                "page_number": None,
+                "evidence_type": "document_full",
+                "similarity": float(doc.get("score") or 0.0),
+                "retrieval_score": float(doc.get("score") or 0.0),
+            }
+        )
+        trace_docs.append(
+            {
+                "document_id": document_id,
+                "source_name": doc.get("source_name"),
+                "source_url": doc.get("source_url"),
+                "full_text_chunk_count": full_chunk_count,
+                "full_text_chars": len(full_text),
+                "truncated": truncated,
+            }
+        )
+
+    if not synthetic_rows:
+        return rows, {"enabled": False, "selected_documents": []}
+
+    return synthetic_rows + rows, {"enabled": True, "selected_documents": trace_docs}
+
+
 def _retrieve_chunks_embedding(conn, question: str, broaden: bool) -> list[dict[str, Any]]:
     if settings.embeddings_provider.lower().strip() != "openai":
         return []
@@ -910,9 +1063,12 @@ def _context_rows(rows: list[dict[str, Any]], *, max_rows: int | None = None) ->
         chunk_type = row.get("chunk_type") or "text"
         page = row.get("page_number")
         page_part = f" page={page}" if page is not None else ""
+        chunk_limit = 500
+        if evidence_type == "document_full" or chunk_type == "document_full":
+            chunk_limit = max(settings.retrieval_full_doc_context_max_chars_per_doc, 4000)
         lines.append(
             f"- source={source_name} type={source_type} evidence={evidence_type} chunk_type={chunk_type}{page_part} url={source_url}\n"
-            f"  chunk={normalized[:500]}"
+            f"  chunk={normalized[:chunk_limit]}"
         )
     return "\n".join(lines)
 

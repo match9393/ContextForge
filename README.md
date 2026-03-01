@@ -185,6 +185,9 @@ All runtime configuration must come from environment variables (never hardcode s
 | `RETRIEVAL_QUERY_VARIANTS_MAX` | No | `4` | `5` | Maximum first-pass retrieval queries (base question + planner variants) | No |
 | `RETRIEVAL_SECOND_PASS_QUERY_VARIANTS_MAX` | No | `3` | `4` | Maximum second-pass retrieval queries when gap-check requests more evidence | No |
 | `RETRIEVAL_CONTEXT_ROWS_FOR_ANSWER` | No | `20` | `12` | Number of top retrieved rows included in LLM answer context | No |
+| `RETRIEVAL_FULL_DOC_CONTEXT_ENABLED` | No | `true` | `false` | Enables full-document context expansion for top docs after broadened retrieval | No |
+| `RETRIEVAL_FULL_DOC_CONTEXT_TOP_DOCS` | No | `2` | `3` | Number of top documents expanded to full text when full-document context is enabled | No |
+| `RETRIEVAL_FULL_DOC_CONTEXT_MAX_CHARS_PER_DOC` | No | `120000` | `80000` | Maximum characters per expanded document passed to final answer synthesis | No |
 | `ASK_TOP_K` | No | `6` | `8` | Number of top retrieved chunks used for answering | No |
 | `OPENAI_API_KEY` | Conditionally | - | `<secret>` | Required when a provider is `openai` | Yes |
 | `OPENAI_TIMEOUT_SECONDS` | No | `60` | `60` | Timeout for OpenAI Responses API requests | No |
@@ -248,6 +251,7 @@ Notes:
 - First `/api/v1/ask` vertical slice:
   - requires authenticated user identity via frontend proxy,
   - performs multimodal retrieval (text chunks + image captions) with planner-driven query variants and optional second-pass evidence gap recovery,
+  - expands top retrieved documents to full-text context for final synthesis after broadened retrieval (configurable caps),
   - applies no-retrieval fallback policy,
   - persists ask history and evidence metadata (including retrieval planner trace and per-round queries),
   - returns optional relevant image evidence links,

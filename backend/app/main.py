@@ -10,6 +10,7 @@ from psycopg import Error as PsycopgError
 
 from app.ask_service import (
     AnswerProviderError,
+    build_answer_context_rows,
     build_answer,
     ensure_user,
     is_out_of_scope,
@@ -208,9 +209,17 @@ def ask(
             else:
                 fallback_mode = "model_knowledge"
 
+        answer_rows, full_doc_trace = build_answer_context_rows(
+            conn,
+            question=question,
+            rows=rows,
+            use_full_doc_context=(fallback_mode == "broadened_retrieval"),
+        )
+        retrieval_trace["full_document_context"] = full_doc_trace
+
         try:
             answer, confidence_percent, grounded, webpage_links, image_urls, generated_image_urls = build_answer(
-                question, rows, fallback_mode
+                question, answer_rows, fallback_mode
             )
         except AnswerProviderError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc

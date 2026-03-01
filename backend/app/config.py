@@ -26,6 +26,9 @@ class Settings(BaseSettings):
     retrieval_query_variants_max: int = 4
     retrieval_second_pass_query_variants_max: int = 3
     retrieval_context_rows_for_answer: int = 20
+    retrieval_full_doc_context_enabled: bool = True
+    retrieval_full_doc_context_top_docs: int = 2
+    retrieval_full_doc_context_max_chars_per_doc: int = 120000
     openai_api_key: str = ""
     openai_timeout_seconds: int = 60
     generated_images_enabled: bool = True
