@@ -10,11 +10,12 @@ from psycopg import Error as PsycopgError
 
 from app.ask_service import (
     AnswerProviderError,
+    build_answer_context_rows,
     build_answer,
     ensure_user,
     is_out_of_scope,
     persist_ask_history,
-    retrieve_chunks,
+    retrieve_chunks_with_planner,
 )
 from app.config import settings
 from app.db import get_connection, init_db
@@ -195,21 +196,30 @@ def ask(
     with get_connection() as conn:
         user_id = ensure_user(conn, user_email, x_user_name)
 
-        rows = retrieve_chunks(conn, question, broaden=False)
-        fallback_mode = "none"
+        rows, retrieval_trace = retrieve_chunks_with_planner(conn, question, broaden=False)
+        retrieval_trace = {"attempts": [{"stage": "primary", **retrieval_trace}]}
 
+        fallback_mode = "none"
+        primary_rounds = retrieval_trace["attempts"][0].get("rounds", [])
+        if rows and len(primary_rounds) > 1:
+            fallback_mode = "broadened_retrieval"
         if not rows:
-            rows = retrieve_chunks(conn, question, broaden=True)
-            if rows:
-                fallback_mode = "broadened_retrieval"
-            elif is_out_of_scope(question):
+            if is_out_of_scope(question):
                 fallback_mode = "out_of_scope"
             else:
                 fallback_mode = "model_knowledge"
 
+        answer_rows, full_doc_trace = build_answer_context_rows(
+            conn,
+            question=question,
+            rows=rows,
+            use_full_doc_context=(fallback_mode == "broadened_retrieval"),
+        )
+        retrieval_trace["full_document_context"] = full_doc_trace
+
         try:
             answer, confidence_percent, grounded, webpage_links, image_urls, generated_image_urls = build_answer(
-                question, rows, fallback_mode
+                question, answer_rows, fallback_mode
             )
         except AnswerProviderError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -227,6 +237,7 @@ def ask(
             retrieval_outcome=retrieval_outcome,
             rows=rows,
             conversation_id=x_conversation_id,
+            retrieval_trace=retrieval_trace,
         )
 
     return AskResponse(

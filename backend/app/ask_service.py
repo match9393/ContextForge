@@ -72,6 +72,31 @@ NAV_NOISE_PHRASES = {
     "return to top",
 }
 
+QUESTION_TYPES = {"procedural", "conceptual", "comparison", "troubleshooting", "other"}
+PROCEDURAL_HINT_TERMS = {
+    "install",
+    "installation",
+    "setup",
+    "configure",
+    "configuration",
+    "migrate",
+    "migration",
+    "upgrade",
+    "deploy",
+    "deployment",
+    "troubleshoot",
+    "fix",
+}
+COMMAND_PATTERN = re.compile(
+    r"(^|[\s`])("
+    r"dnf|yum|apt|apk|docker|docker compose|systemctl|psql|curl|chmod|chown|mkdir|cd|"
+    r"createuser|createdb|repmgr|pg_basebackup|openssl|logrotate"
+    r")([\s`]|$)",
+    re.IGNORECASE,
+)
+PATH_PATTERN = re.compile(r"(^|\s)/(?:[A-Za-z0-9._-]+/)*[A-Za-z0-9._-]+")
+CONFIG_PATTERN = re.compile(r"\b[A-Z][A-Z0-9_]{2,}\b\s*=")
+
 
 class AnswerProviderError(Exception):
     """Raised when answer provider invocation fails."""
@@ -109,6 +134,170 @@ def tokenize(question: str, broaden: bool) -> list[str]:
 
     max_tokens = 12 if broaden else 10
     return tokens[:max_tokens]
+
+
+def _is_navigation_noise_text(text: str) -> bool:
+    normalized = " ".join(text.split()).lower()
+    if not normalized:
+        return False
+    matches = sum(1 for phrase in NAV_NOISE_PHRASES if phrase in normalized)
+    return matches >= 2
+
+
+def _infer_question_type(question: str) -> str:
+    q = question.lower()
+    if any(term in q for term in PROCEDURAL_HINT_TERMS):
+        return "procedural"
+    if "difference" in q or "compare" in q:
+        return "comparison"
+    if "why" in q or "what is" in q:
+        return "conceptual"
+    if "error" in q or "fail" in q or "issue" in q:
+        return "troubleshooting"
+    return "other"
+
+
+def _sanitize_query_variants(candidates: list[Any], *, fallback: str, limit: int) -> list[str]:
+    unique: list[str] = []
+    seen: set[str] = set()
+    for item in candidates:
+        value = str(item or "").strip()
+        if len(value) < 3:
+            continue
+        lowered = value.lower()
+        if lowered in seen:
+            continue
+        seen.add(lowered)
+        unique.append(value)
+        if len(unique) >= max(limit, 1):
+            break
+
+    if fallback.lower() not in seen:
+        unique.insert(0, fallback)
+    return unique[: max(limit, 1)]
+
+
+def _filter_off_topic_query_variants(question: str, queries: list[str]) -> list[str]:
+    q = question.lower()
+    blocked_terms = {
+        "pip",
+        "conda",
+        "poetry",
+        "venv",
+        "npm",
+        "yarn",
+        "maven",
+        "gradle",
+        "python",
+        "node.js",
+        "java",
+    }
+
+    filtered: list[str] = []
+    for query in queries:
+        lower = query.lower()
+        if any(term in lower for term in blocked_terms) and not any(term in q for term in blocked_terms):
+            continue
+        filtered.append(query)
+
+    if not filtered:
+        return [question]
+    return filtered
+
+
+def _heuristic_query_variants(question: str, question_type: str, evidence_needs: list[str]) -> list[str]:
+    variants = [question]
+    if question_type == "procedural":
+        variants.append(f"{question} step by step")
+        variants.append(f"{question} commands config paths verification")
+    elif question_type == "troubleshooting":
+        variants.append(f"{question} troubleshooting checks")
+    elif question_type == "comparison":
+        variants.append(f"{question} differences tradeoffs")
+    else:
+        variants.append(f"{question} key concepts")
+
+    if evidence_needs:
+        need_fragment = " ".join(evidence_needs[:4])
+        variants.append(f"{question} {need_fragment}")
+
+    return _sanitize_query_variants(
+        variants,
+        fallback=question,
+        limit=max(settings.retrieval_query_variants_max, 1),
+    )
+
+
+def plan_retrieval(question: str) -> dict[str, Any]:
+    fallback_type = _infer_question_type(question)
+    fallback_needs = ["core_steps"] if fallback_type == "procedural" else ["key_points"]
+    fallback_queries = _heuristic_query_variants(question, fallback_type, fallback_needs)
+
+    if not settings.retrieval_planner_enabled or settings.answer_provider.lower().strip() != "openai":
+        return {
+            "question_type": fallback_type,
+            "evidence_needs": fallback_needs,
+            "query_variants": fallback_queries,
+            "source": "heuristic",
+        }
+
+    planner_prompt = (
+        "Return JSON only with keys:\n"
+        "- question_type: one of procedural|conceptual|comparison|troubleshooting|other\n"
+        "- evidence_needs: short list of evidence required to answer well\n"
+        "- query_variants: 2-4 concrete retrieval queries\n\n"
+        "Rules:\n"
+        "- Prefer factual, operator-focused retrieval intents.\n"
+        "- For procedural questions, include queries for commands, paths, configuration keys, prerequisites, and verification.\n"
+        "- Keep domain assumptions conservative: do not invent language/runtime package managers unless the question explicitly asks for them.\n"
+        "- Stay close to the product terms in the question.\n"
+        "- Keep each query concise and specific.\n\n"
+        f"Question:\n{question}"
+    )
+
+    try:
+        raw = generate_text_response(
+            model=settings.answer_model,
+            system_prompt="You are a retrieval planner. Output strict JSON only.",
+            user_prompt=planner_prompt,
+            max_output_tokens=260,
+        )
+    except OpenAIClientError:
+        return {
+            "question_type": fallback_type,
+            "evidence_needs": fallback_needs,
+            "query_variants": fallback_queries,
+            "source": "heuristic_fallback",
+        }
+
+    parsed = _extract_json_object(raw)
+    question_type = str(parsed.get("question_type", fallback_type)).strip().lower()
+    if question_type not in QUESTION_TYPES:
+        question_type = fallback_type
+
+    evidence_raw = parsed.get("evidence_needs")
+    evidence_needs: list[str]
+    if isinstance(evidence_raw, list):
+        evidence_needs = [str(item).strip() for item in evidence_raw if str(item).strip()][:8]
+    else:
+        evidence_needs = fallback_needs
+    if not evidence_needs:
+        evidence_needs = fallback_needs
+
+    query_raw = parsed.get("query_variants")
+    query_candidates = query_raw if isinstance(query_raw, list) else fallback_queries
+    query_variants = _sanitize_query_variants(
+        _filter_off_topic_query_variants(question, list(query_candidates)),
+        fallback=question,
+        limit=max(settings.retrieval_query_variants_max, 1),
+    )
+
+    return {
+        "question_type": question_type,
+        "evidence_needs": evidence_needs,
+        "query_variants": query_variants,
+        "source": "planner_llm",
+    }
 
 
 def _row_dedupe_key(row: dict[str, Any]) -> str:
@@ -155,15 +344,8 @@ def _merge_retrieval_rows(
     seen_keys: set[str] = set()
     source_counts: dict[tuple[str, str, str], int] = {}
 
-    def is_nav_noise(row: dict[str, Any]) -> bool:
-        text = " ".join(str(row.get("chunk_text", "")).split()).lower()
-        if not text:
-            return False
-        matches = sum(1 for phrase in NAV_NOISE_PHRASES if phrase in text)
-        return matches >= 2
-
     for row in combined:
-        if is_nav_noise(row):
+        if _is_navigation_noise_text(str(row.get("chunk_text", ""))):
             continue
 
         row_key = _row_dedupe_key(row)
@@ -185,7 +367,7 @@ def _merge_retrieval_rows(
     # Prefer lexical matches first to capture concrete lists/labels.
     supplemental = list(keyword_rows) + list(embedding_rows)
     for row in supplemental:
-        if is_nav_noise(row):
+        if _is_navigation_noise_text(str(row.get("chunk_text", ""))):
             continue
         row_key = _row_dedupe_key(row)
         if row_key in seen_keys:
@@ -198,21 +380,469 @@ def _merge_retrieval_rows(
     return selected
 
 
-def retrieve_chunks(conn, question: str, broaden: bool = False) -> list[dict[str, Any]]:
+def _row_has_command_signal(row: dict[str, Any]) -> bool:
+    text = " ".join(str(row.get("chunk_text", "")).split())
+    if not text:
+        return False
+    return bool(COMMAND_PATTERN.search(text))
+
+
+def _row_has_path_signal(row: dict[str, Any]) -> bool:
+    text = " ".join(str(row.get("chunk_text", "")).split())
+    if not text:
+        return False
+    return bool(PATH_PATTERN.search(text))
+
+
+def _row_has_config_signal(row: dict[str, Any]) -> bool:
+    text = " ".join(str(row.get("chunk_text", "")).split())
+    if not text:
+        return False
+    return bool(CONFIG_PATTERN.search(text))
+
+
+def _rerank_rows(
+    rows: list[dict[str, Any]],
+    *,
+    question: str,
+    question_type: str,
+    limit: int,
+) -> list[dict[str, Any]]:
+    if not rows:
+        return []
+
+    scored: list[dict[str, Any]] = []
+    question_text = question.lower()
+    question_tokens = {
+        token
+        for token in re.findall(r"[a-z0-9]+", question_text)
+        if len(token) >= 4 and token not in STOPWORDS
+    }
+    explicit_apio_core = "apio core" in question_text
+
+    for row in rows:
+        base = float(row.get("similarity") or 0.0)
+        score = base
+        source_text = " ".join(
+            [
+                str(row.get("source_name") or "").lower(),
+                str(row.get("source_url") or "").lower(),
+            ]
+        )
+        source_tokens = {token for token in re.findall(r"[a-z0-9]+", source_text) if len(token) >= 4}
+        overlap = len(question_tokens & source_tokens)
+        score += min(overlap * 0.25, 1.5)
+        if explicit_apio_core:
+            if "apio core" in source_text or "apiocore" in source_text:
+                score += 1.5
+            else:
+                score -= 0.6
+
+        if question_type == "procedural":
+            if _row_has_command_signal(row):
+                score += 3.0
+            if _row_has_path_signal(row):
+                score += 1.6
+            if _row_has_config_signal(row):
+                score += 1.4
+
+            chunk_text = str(row.get("chunk_text", "")).lower()
+            if "prerequisite" in chunk_text or "requirements" in chunk_text:
+                score += 0.7
+            if "verify" in chunk_text or "status" in chunk_text or "health" in chunk_text:
+                score += 0.7
+
+        row_copy = dict(row)
+        row_copy["retrieval_score"] = score
+        scored.append(row_copy)
+
+    scored.sort(
+        key=lambda row: (
+            float(row.get("retrieval_score") or 0.0),
+            float(row.get("similarity") or 0.0),
+        ),
+        reverse=True,
+    )
+
+    deduped: list[dict[str, Any]] = []
+    seen_keys: set[str] = set()
+    source_counts: dict[tuple[str, str, str], int] = {}
+    source_cap = 2 if question_type == "procedural" else 1
+    for row in scored:
+        key = _row_dedupe_key(row)
+        if key in seen_keys:
+            continue
+        source_key = _row_source_key(row)
+        count = source_counts.get(source_key, 0)
+        if count >= source_cap:
+            continue
+        seen_keys.add(key)
+        source_counts[source_key] = count + 1
+        deduped.append(row)
+        if len(deduped) >= limit:
+            return deduped
+
+    for row in scored:
+        key = _row_dedupe_key(row)
+        if key in seen_keys:
+            continue
+        seen_keys.add(key)
+        deduped.append(row)
+        if len(deduped) >= limit:
+            break
+
+    return deduped
+
+
+def _should_second_pass(
+    *,
+    question: str,
+    question_type: str,
+    evidence_needs: list[str],
+    rows: list[dict[str, Any]],
+) -> dict[str, Any]:
+    if not settings.retrieval_second_pass_enabled:
+        return {"needs_second_pass": False, "query_variants": [], "reason": "disabled"}
+    if max(settings.retrieval_max_rounds, 1) < 2:
+        return {"needs_second_pass": False, "query_variants": [], "reason": "single_round_config"}
+
+    command_hits = sum(1 for row in rows if _row_has_command_signal(row))
+    config_hits = sum(1 for row in rows if _row_has_config_signal(row))
+    row_count = len(rows)
+
+    heuristic_needs_more = False
+    if question_type == "procedural":
+        heuristic_needs_more = row_count < max(settings.ask_top_k // 2, 3) or (command_hits + config_hits) < 2
+    elif row_count == 0:
+        heuristic_needs_more = True
+
+    fallback_queries = _sanitize_query_variants(
+        _filter_off_topic_query_variants(
+            question,
+            [
+                question,
+                f"{question} exact commands",
+                f"{question} config keys file paths",
+                f"{question} verification steps",
+                f"{question} {' '.join(evidence_needs[:3])}",
+            ],
+        ),
+        fallback=question,
+        limit=max(settings.retrieval_second_pass_query_variants_max, 1),
+    )
+
+    if settings.answer_provider.lower().strip() != "openai":
+        return {
+            "needs_second_pass": heuristic_needs_more,
+            "query_variants": fallback_queries if heuristic_needs_more else [],
+            "reason": "heuristic_non_openai",
+        }
+
+    gap_prompt = (
+        "Return JSON only with keys:\n"
+        "- needs_second_pass (boolean)\n"
+        "- reason (short string)\n"
+        "- query_variants (up to 3 focused retrieval queries)\n\n"
+        "Decide if current retrieved evidence is enough to answer precisely.\n"
+        "For procedural questions, require concrete commands/config/path/verification evidence.\n\n"
+        "Do not suggest language/runtime package-manager queries unless explicitly present in the user question.\n\n"
+        f"Question:\n{question}\n\n"
+        f"Question type: {question_type}\n"
+        f"Evidence needs: {', '.join(evidence_needs)}\n\n"
+        "Current context summary:\n"
+        f"{_context_rows(rows, max_rows=12)}"
+    )
+
+    try:
+        raw = generate_text_response(
+            model=settings.answer_model,
+            system_prompt="You are a retrieval gap checker. Output strict JSON only.",
+            user_prompt=gap_prompt,
+            max_output_tokens=220,
+        )
+        parsed = _extract_json_object(raw)
+        llm_needs = bool(parsed.get("needs_second_pass", False))
+        reason = str(parsed.get("reason") or "").strip() or "llm_decision"
+        query_raw = parsed.get("query_variants")
+        query_candidates = list(query_raw) if isinstance(query_raw, list) else fallback_queries
+        queries = _sanitize_query_variants(
+            _filter_off_topic_query_variants(question, query_candidates),
+            fallback=question,
+            limit=max(settings.retrieval_second_pass_query_variants_max, 1),
+        )
+        needs = llm_needs or heuristic_needs_more
+        return {
+            "needs_second_pass": needs,
+            "query_variants": queries if needs else [],
+            "reason": reason if needs else "sufficient",
+        }
+    except OpenAIClientError:
+        return {
+            "needs_second_pass": heuristic_needs_more,
+            "query_variants": fallback_queries if heuristic_needs_more else [],
+            "reason": "heuristic_fallback",
+        }
+
+
+def retrieve_chunks(
+    conn,
+    question: str,
+    *,
+    broaden: bool = False,
+    query_variants: list[str] | None = None,
+    question_type: str = "other",
+) -> list[dict[str, Any]]:
     limit = max(settings.ask_top_k + (4 if broaden else 0), 1)
-    embedding_rows = _retrieve_chunks_embedding(conn, question, broaden)
-    keyword_rows = _retrieve_chunks_keyword(conn, question, broaden)
+    all_queries = _sanitize_query_variants(
+        [question] + (query_variants or []),
+        fallback=question,
+        limit=max(settings.retrieval_query_variants_max, 1),
+    )
+
+    embedding_rows: list[dict[str, Any]] = []
+    keyword_rows: list[dict[str, Any]] = []
+    for query in all_queries:
+        embedding_rows.extend(_retrieve_chunks_embedding(conn, query, broaden))
+        keyword_rows.extend(_retrieve_chunks_keyword(conn, query, broaden))
 
     if not embedding_rows and not keyword_rows:
         return []
-    if embedding_rows and not keyword_rows:
-        return embedding_rows[:limit]
-    if keyword_rows and not embedding_rows:
-        return keyword_rows[:limit]
 
-    merged = _merge_retrieval_rows(embedding_rows, keyword_rows, limit=limit, broaden=broaden)
-    merged.sort(key=lambda row: float(row.get("similarity") or -1.0), reverse=True)
-    return merged[:limit]
+    merged = _merge_retrieval_rows(embedding_rows, keyword_rows, limit=limit * 2, broaden=broaden)
+    return _rerank_rows(merged, question=question, question_type=question_type, limit=limit)
+
+
+def retrieve_chunks_with_planner(conn, question: str, *, broaden: bool = False) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    plan = plan_retrieval(question)
+    question_type = str(plan.get("question_type") or "other")
+    evidence_needs = [str(item) for item in plan.get("evidence_needs", []) if str(item).strip()]
+    plan_queries = [str(item) for item in plan.get("query_variants", []) if str(item).strip()]
+
+    first_rows = retrieve_chunks(
+        conn,
+        question,
+        broaden=broaden,
+        query_variants=plan_queries,
+        question_type=question_type,
+    )
+
+    retrieval_trace: dict[str, Any] = {
+        "question_type": question_type,
+        "evidence_needs": evidence_needs,
+        "planner_source": str(plan.get("source") or "unknown"),
+        "rounds": [
+            {
+                "round": 1,
+                "broaden": broaden,
+                "queries": _sanitize_query_variants(
+                    [question] + plan_queries,
+                    fallback=question,
+                    limit=max(settings.retrieval_query_variants_max, 1),
+                ),
+                "result_count": len(first_rows),
+                "top_chunk_ids": [int(row["chunk_id"]) for row in first_rows if row.get("chunk_id") is not None][:8],
+            }
+        ],
+    }
+
+    if max(settings.retrieval_max_rounds, 1) < 2:
+        return first_rows, retrieval_trace
+
+    second_pass = _should_second_pass(
+        question=question,
+        question_type=question_type,
+        evidence_needs=evidence_needs,
+        rows=first_rows,
+    )
+    retrieval_trace["second_pass"] = {
+        "needed": bool(second_pass.get("needs_second_pass")),
+        "reason": str(second_pass.get("reason") or ""),
+    }
+    if not second_pass.get("needs_second_pass"):
+        return first_rows, retrieval_trace
+
+    second_queries = [str(item) for item in second_pass.get("query_variants", []) if str(item).strip()]
+    second_rows = retrieve_chunks(
+        conn,
+        question,
+        broaden=True,
+        query_variants=second_queries,
+        question_type=question_type,
+    )
+    combined = _rerank_rows(
+        first_rows + second_rows,
+        question=question,
+        question_type=question_type,
+        limit=max(settings.ask_top_k + (4 if broaden else 0), 1),
+    )
+
+    retrieval_trace["rounds"].append(
+        {
+            "round": 2,
+            "broaden": True,
+            "queries": _sanitize_query_variants(
+                [question] + second_queries,
+                fallback=question,
+                limit=max(settings.retrieval_second_pass_query_variants_max, 1),
+            ),
+            "result_count": len(second_rows),
+            "top_chunk_ids": [int(row["chunk_id"]) for row in second_rows if row.get("chunk_id") is not None][:8],
+        }
+    )
+
+    return combined, retrieval_trace
+
+
+def _extract_question_urls(question: str) -> set[str]:
+    urls = set(re.findall(r"https?://[^\s)>\"]+", question, flags=re.IGNORECASE))
+    return {url.strip().rstrip(".,;:").lower() for url in urls if url.strip()}
+
+
+def _doc_full_text_for_answer(conn, *, document_id: int, max_chars: int) -> tuple[str, int, bool]:
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT chunk_type, text
+            FROM text_chunks
+            WHERE document_id = %s
+            ORDER BY id ASC;
+            """,
+            (document_id,),
+        )
+        chunk_rows = cur.fetchall()
+
+    parts: list[str] = []
+    for row in chunk_rows:
+        chunk_text = " ".join(str(row.get("text") or "").split()).strip()
+        if not chunk_text:
+            continue
+        if _is_navigation_noise_text(chunk_text):
+            continue
+        chunk_type = str(row.get("chunk_type") or "text")
+        if chunk_type == "text":
+            parts.append(chunk_text)
+        else:
+            parts.append(f"[{chunk_type}] {chunk_text}")
+
+    merged = "\n".join(parts).strip()
+    if not merged:
+        return "", 0, False
+
+    max_allowed = max(max_chars, 4000)
+    if len(merged) <= max_allowed:
+        return merged, len(parts), False
+
+    head = max_allowed // 2
+    tail = max_allowed - head
+    truncated = (
+        merged[:head]
+        + "\n...[document middle truncated for token budget]...\n"
+        + merged[-tail:]
+    )
+    return truncated, len(parts), True
+
+
+def _select_documents_for_full_context(question: str, rows: list[dict[str, Any]], limit: int) -> list[dict[str, Any]]:
+    if not rows or limit <= 0:
+        return []
+
+    explicit_urls = _extract_question_urls(question)
+    doc_best: dict[int, dict[str, Any]] = {}
+    for row in rows:
+        doc_id_raw = row.get("document_id")
+        if doc_id_raw is None:
+            continue
+        doc_id = int(doc_id_raw)
+        score = float(row.get("retrieval_score") or row.get("similarity") or 0.0)
+        entry = doc_best.get(doc_id)
+        if entry is None or score > float(entry.get("score", -10_000.0)):
+            doc_best[doc_id] = {
+                "document_id": doc_id,
+                "source_name": row.get("source_name"),
+                "source_type": row.get("source_type"),
+                "source_url": row.get("source_url"),
+                "score": score,
+            }
+
+    docs = list(doc_best.values())
+    for doc in docs:
+        source_url = str(doc.get("source_url") or "").strip().lower()
+        doc["direct_url_match"] = 1 if source_url and source_url in explicit_urls else 0
+
+    docs.sort(
+        key=lambda item: (
+            int(item.get("direct_url_match") or 0),
+            float(item.get("score") or 0.0),
+        ),
+        reverse=True,
+    )
+    return docs[:limit]
+
+
+def build_answer_context_rows(
+    conn,
+    *,
+    question: str,
+    rows: list[dict[str, Any]],
+    use_full_doc_context: bool,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    if not rows:
+        return rows, {"enabled": False, "selected_documents": []}
+    if not use_full_doc_context or not settings.retrieval_full_doc_context_enabled:
+        return rows, {"enabled": False, "selected_documents": []}
+
+    selected_docs = _select_documents_for_full_context(
+        question,
+        rows,
+        limit=max(settings.retrieval_full_doc_context_top_docs, 1),
+    )
+    if not selected_docs:
+        return rows, {"enabled": False, "selected_documents": []}
+
+    synthetic_rows: list[dict[str, Any]] = []
+    trace_docs: list[dict[str, Any]] = []
+    for doc in selected_docs:
+        document_id = int(doc["document_id"])
+        full_text, full_chunk_count, truncated = _doc_full_text_for_answer(
+            conn,
+            document_id=document_id,
+            max_chars=settings.retrieval_full_doc_context_max_chars_per_doc,
+        )
+        if not full_text:
+            continue
+
+        synthetic_rows.append(
+            {
+                "chunk_id": None,
+                "chunk_text": full_text,
+                "chunk_type": "document_full",
+                "document_id": document_id,
+                "source_name": doc.get("source_name"),
+                "source_type": doc.get("source_type"),
+                "source_url": doc.get("source_url"),
+                "image_id": None,
+                "image_storage_key": None,
+                "page_number": None,
+                "evidence_type": "document_full",
+                "similarity": float(doc.get("score") or 0.0),
+                "retrieval_score": float(doc.get("score") or 0.0),
+            }
+        )
+        trace_docs.append(
+            {
+                "document_id": document_id,
+                "source_name": doc.get("source_name"),
+                "source_url": doc.get("source_url"),
+                "full_text_chunk_count": full_chunk_count,
+                "full_text_chars": len(full_text),
+                "truncated": truncated,
+            }
+        )
+
+    if not synthetic_rows:
+        return rows, {"enabled": False, "selected_documents": []}
+
+    return synthetic_rows + rows, {"enabled": True, "selected_documents": trace_docs}
 
 
 def _retrieve_chunks_embedding(conn, question: str, broaden: bool) -> list[dict[str, Any]]:
@@ -418,12 +1048,13 @@ def _confidence_for_mode(fallback_mode: str) -> int:
     return 18
 
 
-def _context_rows(rows: list[dict[str, Any]]) -> str:
+def _context_rows(rows: list[dict[str, Any]], *, max_rows: int | None = None) -> str:
     if not rows:
         return "No indexed context was retrieved."
 
+    row_cap = max_rows if max_rows is not None else max(settings.retrieval_context_rows_for_answer, 1)
     lines: list[str] = []
-    for row in rows[:10]:
+    for row in rows[: max(row_cap, 1)]:
         normalized = " ".join(str(row.get("chunk_text", "")).split())
         source_name = row.get("source_name") or "unknown-source"
         source_type = row.get("source_type") or "unknown"
@@ -432,9 +1063,12 @@ def _context_rows(rows: list[dict[str, Any]]) -> str:
         chunk_type = row.get("chunk_type") or "text"
         page = row.get("page_number")
         page_part = f" page={page}" if page is not None else ""
+        chunk_limit = 500
+        if evidence_type == "document_full" or chunk_type == "document_full":
+            chunk_limit = max(settings.retrieval_full_doc_context_max_chars_per_doc, 4000)
         lines.append(
             f"- source={source_name} type={source_type} evidence={evidence_type} chunk_type={chunk_type}{page_part} url={source_url}\n"
-            f"  chunk={normalized[:500]}"
+            f"  chunk={normalized[:chunk_limit]}"
         )
     return "\n".join(lines)
 
@@ -685,6 +1319,7 @@ def persist_ask_history(
     retrieval_outcome: str,
     rows: list[dict[str, Any]],
     conversation_id: str | None,
+    retrieval_trace: dict[str, Any] | None = None,
 ) -> None:
     documents_used: list[dict[str, Any]] = []
     chunks_used: list[int] = []
@@ -726,6 +1361,7 @@ def persist_ask_history(
         "fallback_mode": fallback_mode,
         "answer_provider": settings.answer_provider,
         "answer_model": settings.answer_model,
+        "retrieval_trace": retrieval_trace or {},
     }
 
     with conn.cursor() as cur:
