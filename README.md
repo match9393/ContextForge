@@ -179,6 +179,12 @@ All runtime configuration must come from environment variables (never hardcode s
 | `VISION_MODEL` | No | `gpt-5.2` | `gpt-5.2` | Vision model id | No |
 | `EMBEDDINGS_MODEL` | No | `text-embedding-3-large` | `text-embedding-3-large` | Embedding model id | No |
 | `ANSWER_GROUNDING_MODE` | No | `balanced` | `strict` | Controls how strongly answers stay grounded to retrieved context (`strict|balanced|expansive`) | No |
+| `RETRIEVAL_PLANNER_ENABLED` | No | `true` | `false` | Enables LLM retrieval-planner step that generates targeted query variants | No |
+| `RETRIEVAL_SECOND_PASS_ENABLED` | No | `true` | `false` | Enables optional second retrieval pass when first-pass evidence is insufficient | No |
+| `RETRIEVAL_MAX_ROUNDS` | No | `2` | `1` | Maximum retrieval rounds per ask request | No |
+| `RETRIEVAL_QUERY_VARIANTS_MAX` | No | `4` | `5` | Maximum first-pass retrieval queries (base question + planner variants) | No |
+| `RETRIEVAL_SECOND_PASS_QUERY_VARIANTS_MAX` | No | `3` | `4` | Maximum second-pass retrieval queries when gap-check requests more evidence | No |
+| `RETRIEVAL_CONTEXT_ROWS_FOR_ANSWER` | No | `20` | `12` | Number of top retrieved rows included in LLM answer context | No |
 | `ASK_TOP_K` | No | `6` | `8` | Number of top retrieved chunks used for answering | No |
 | `OPENAI_API_KEY` | Conditionally | - | `<secret>` | Required when a provider is `openai` | Yes |
 | `OPENAI_TIMEOUT_SECONDS` | No | `60` | `60` | Timeout for OpenAI Responses API requests | No |
@@ -241,9 +247,9 @@ Notes:
 - Backend startup schema bootstrap (`users`, `documents`, `text_chunks`, `document_images`, `image_captions`, `ask_history`).
 - First `/api/v1/ask` vertical slice:
   - requires authenticated user identity via frontend proxy,
-  - performs multimodal retrieval (text chunks + image captions) with broadened retry (keyword fallback when needed),
+  - performs multimodal retrieval (text chunks + image captions) with planner-driven query variants and optional second-pass evidence gap recovery,
   - applies no-retrieval fallback policy,
-  - persists ask history and evidence metadata,
+  - persists ask history and evidence metadata (including retrieval planner trace and per-round queries),
   - returns optional relevant image evidence links,
   - can generate and return inline visual(s) for the answer when the model decides it helps or user asks.
 - PDF ingestion vertical slice (`/api/v1/admin/ingest/pdf`):
